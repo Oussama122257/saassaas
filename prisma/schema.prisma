@@ -1,0 +1,1019 @@
+// COD Call Center Platform — Prisma schema (phase 1)
+// Money is stored in DZD as integers (dinars, no decimals).
+// All tenant data hangs off Organization: MERCHANT orgs own stores/orders/customers,
+// AGENCY orgs own users/pods and work merchants' orders through a ServiceContract.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────── Enums ───────────────────────────────
+
+enum OrgType {
+  AGENCY
+  MERCHANT
+}
+
+enum Role {
+  PLATFORM_ADMIN
+  ORG_OWNER
+  SUPERVISOR
+  FOLLOWUP_AGENT
+  CONFIRMATION_AGENT
+  WAREHOUSE
+  CLIENT_VIEWER
+  MARKETER
+  READ_ONLY
+}
+
+enum Availability {
+  AVAILABLE
+  BREAK
+  OFFLINE
+}
+
+enum ServicePackage {
+  CONFIRMATION
+  CONFIRMATION_FOLLOWUP
+  FULL_COD_OPS
+}
+
+enum PricingModel {
+  PER_DELIVERED
+  PER_CONFIRMED
+  FIXED_PLUS_BONUS
+  DEDICATED_POD
+}
+
+enum ContractStatus {
+  TRIAL
+  ACTIVE
+  PAUSED
+  ENDED
+}
+
+enum Channel {
+  SHOPIFY
+  WOOCOMMERCE
+  YOUCAN
+  DZBUILD
+  GOOGLE_SHEET
+  MANUAL
+  API
+}
+
+enum DeliveryType {
+  HOME
+  STOP_DESK
+}
+
+enum StatusGroup {
+  CONFIRMATION
+  SHIPPING
+  DELIVERY
+  RETURN
+  CLOSED
+}
+
+// Codes are fixed (KPIs and rules depend on them). Labels live in src/lib/orders/statuses.ts
+// and can be overridden per merchant through StatusLabelOverride.
+enum OrderStatus {
+  // confirmation
+  NOUVEAU
+  ASSIGNEE
+  APPEL_1
+  APPEL_2
+  APPEL_3
+  REPORTE
+  A_VERIFIER
+  CONFIRMEE
+  CONFIRMEE_BOT
+  CONFIRMEE_RUPTURE
+  ANNULEE
+  DOUBLE
+  FAUSSE_COMMANDE
+  INJOIGNABLE
+  // shipping
+  PRET_A_EXPEDIER
+  EXPEDIE
+  // delivery
+  ARRIVE_WILAYA
+  STOP_DESK
+  EN_LIVRAISON
+  CLIENT_INJOIGNABLE_LIVREUR
+  REPORTE_CLIENT
+  ADRESSE_ERRONEE
+  TENTATIVE_ECHOUEE
+  REFUSE
+  ALERTE
+  LIVRE
+  // return
+  RETOUR_EN_COURS
+  RETOUR_RECU
+  PERDU_ENDOMMAGE
+  // closed
+  ENCAISSE
+}
+
+enum CancelReason {
+  CHANGED_MIND
+  PRICE_TOO_HIGH
+  SHIPPING_FEE
+  BOUGHT_ELSEWHERE
+  PRODUCT_DOUBT
+  WRONG_PRODUCT_OR_SIZE
+  DELIVERY_TOO_SLOW
+  DID_NOT_ORDER
+  OTHER
+}
+
+enum ReturnReason {
+  PRICE_SHOCK
+  NOT_AS_EXPECTED
+  BOUGHT_ELSEWHERE
+  CLIENT_UNREACHABLE
+  WRONG_ADDRESS
+  DELIVERY_DELAY
+  FAKE_CONFIRMATION
+  CLIENT_ABSENT
+  DAMAGED
+  OTHER
+}
+
+enum CallSlot {
+  MORNING
+  AFTERNOON
+  EVENING
+}
+
+enum CallOutcome {
+  ANSWERED
+  NO_ANSWER
+  BUSY
+  OFF
+  WRONG_NUMBER
+  CALLBACK_REQUESTED
+}
+
+enum CallProof {
+  VOIP_LOG
+  DEVICE_LOG
+  NONE
+}
+
+enum TaskType {
+  RESCUE_NO_ANSWER
+  ALERT
+  WRONG_ADDRESS
+  STOPDESK_REMINDER
+  PRE_RETURN_CALL
+  STUCK_PARCEL
+  QA_REVIEW
+  VERIFY_ORDER
+  WAITING_STOCK
+  VERIFY_BOT_CONFIRMATION
+  RESCHEDULE_CALL
+  FAILED_ATTEMPT_CALL
+}
+
+enum MsgChannel {
+  WHATSAPP
+  SMS
+  EMAIL
+}
+
+enum StockMoveType {
+  IN
+  OUT
+  RESERVE
+  RELEASE
+  RETURN_IN
+  WRITE_OFF
+  ADJUST
+}
+
+enum InvoiceStatus {
+  DRAFT
+  SENT
+  PAID
+  OVERDUE
+}
+
+// ─────────────────────────────── Tenancy ───────────────────────────────
+
+model Organization {
+  id        String   @id @default(cuid())
+  type      OrgType
+  name      String
+  slug      String   @unique
+  locale    String   @default("ar")
+  timezone  String   @default("Africa/Algiers")
+  planId    String?
+  plan      Plan?    @relation(fields: [planId], references: [id])
+  settings  Json     @default("{}")
+  /// per-merchant order sequence counter (store sequence number shown in UI)
+  orderSeq  Int      @default(0)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships         Membership[]
+  stores              Store[]
+  products            Product[]
+  customers           Customer[]
+  orders              Order[]               @relation("MerchantOrders")
+  pods                Pod[]
+  podMerchants        PodMerchant[]
+  contractsAsAgency   ServiceContract[]     @relation("AgencyContracts")
+  contractsAsMerchant ServiceContract[]     @relation("MerchantContracts")
+  blacklist           Blacklist[]
+  outboundNumbers     OutboundNumber[]
+  warehouses          Warehouse[]
+  couriers            Courier[]
+  courierRoutes       CourierRoute[]
+  warnings            Warning[]
+  apiKeys             ApiKey[]
+  idempotencyKeys     IdempotencyKey[]
+  auditLogs           AuditLog[]
+  statusLabels        StatusLabelOverride[]
+  shifts              Shift[]
+}
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  phone           String?
+  name            String
+  passwordHash    String?
+  totpSecret      String?
+  totpEnabledAt   DateTime?
+  locale          String    @default("ar")
+  isPlatformAdmin Boolean   @default(false)
+  active          Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  memberships       Membership[]
+  assignedOrders    Order[]         @relation("AssignedOrders")
+  confirmedOrders   Order[]         @relation("ConfirmedOrders")
+  calls             CallAttempt[]
+  orderEvents       OrderEvent[]
+  qaReviews         QaReview[]
+  warningsReceived  Warning[]       @relation("WarningsReceived")
+  warningsIssued    Warning[]       @relation("WarningsIssued")
+  blacklistApproved Blacklist[]
+  tasks             Task[]
+  shifts            Shift[]
+  stockMovements    StockMovement[]
+  podsFollowedUp    Pod[]           @relation("PodFollowUp")
+  auditLogs         AuditLog[]
+  apiKeysCreated    ApiKey[]
+}
+
+model Membership {
+  id           String       @id @default(cuid())
+  userId       String
+  orgId        String
+  role         Role
+  /// agents belong to one pod
+  podId        String?
+  active       Boolean      @default(true)
+  availability Availability @default(OFFLINE)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  pod  Pod?         @relation(fields: [podId], references: [id])
+
+  @@unique([userId, orgId])
+  @@index([orgId, role])
+}
+
+model ServiceContract {
+  id           String         @id @default(cuid())
+  agencyId     String
+  merchantId   String
+  package      ServicePackage
+  pricingModel PricingModel
+  /// DZD per unit (delivered or confirmed)
+  unitPrice    Int?
+  fixedMonthly Int?
+  minMonthly   Int?
+  status       ContractStatus
+  trialEndsAt  DateTime?
+  startsAt     DateTime
+  endsAt       DateTime?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  agency   Organization @relation("AgencyContracts", fields: [agencyId], references: [id])
+  merchant Organization @relation("MerchantContracts", fields: [merchantId], references: [id])
+  invoices Invoice[]
+
+  @@unique([agencyId, merchantId])
+  @@index([merchantId, status])
+}
+
+model Pod {
+  id             String   @id @default(cuid())
+  /// agency (or merchant with own team)
+  orgId          String
+  name           String
+  followUpUserId String?
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  org          Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  followUpUser User?         @relation("PodFollowUp", fields: [followUpUserId], references: [id])
+  members      Membership[]
+  merchants    PodMerchant[]
+  orders       Order[]
+
+  @@index([orgId])
+}
+
+model PodMerchant {
+  podId      String
+  merchantId String
+
+  pod      Pod          @relation(fields: [podId], references: [id], onDelete: Cascade)
+  merchant Organization @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@id([podId, merchantId])
+}
+
+model Plan {
+  id           String   @id @default(cuid())
+  name         String
+  monthlyPrice Int
+  maxOrders    Int?
+  maxUsers     Int?
+  maxStores    Int?
+  features     String[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  organizations Organization[]
+}
+
+// ─────────────────────────────── Catalog ───────────────────────────────
+
+model Store {
+  id            String   @id @default(cuid())
+  merchantId    String
+  name          String
+  channel       Channel
+  /// encrypted at rest (AES-256-GCM, see src/lib/crypto.ts)
+  credentials   String?
+  webhookSecret String?
+  /// per-store field mapping for COD form apps (phase 2)
+  fieldMapping  Json?
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  merchant Organization @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  orders   Order[]
+
+  @@index([merchantId])
+}
+
+model Product {
+  id         String   @id @default(cuid())
+  merchantId String
+  sku        String?
+  name       String
+  price      Int
+  costPrice  Int?
+  imageUrl   String?
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  merchant   Organization     @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  variants   ProductVariant[]
+  sheet      ProductSheet?
+  stockItems StockItem[]
+  orderItems OrderItem[]
+
+  @@index([merchantId])
+}
+
+model ProductVariant {
+  id        String  @id @default(cuid())
+  productId String
+  name      String
+  sku       String?
+  price     Int?
+
+  product    Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
+  orderItems OrderItem[]
+  stockItems StockItem[]
+
+  @@index([productId])
+}
+
+model ProductSheet {
+  id                   String    @id @default(cuid())
+  productId            String    @unique
+  /// benefits, not features
+  sellingPoints        String[]
+  sizeGuide            String?
+  /// [{ q, a, lang }]
+  faq                  Json      @default("[]")
+  /// confirmation script (Darija)
+  scriptAr             String
+  scriptFr             String?
+  /// client approval (managed service)
+  approvedByMerchantAt DateTime?
+  version              Int       @default(1)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+}
+
+// ─────────────────────────────── Customers ───────────────────────────────
+
+model Customer {
+  id             String   @id @default(cuid())
+  merchantId     String
+  /// normalized 0XXXXXXXXX
+  phone          String
+  phone2         String?
+  name           String?
+  ordersCount    Int      @default(0)
+  deliveredCount Int      @default(0)
+  refusedCount   Int      @default(0)
+  blacklisted    Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  merchant Organization @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  orders   Order[]
+
+  @@unique([merchantId, phone])
+  @@index([phone])
+}
+
+/// cross-merchant within an agency, approved by supervisor
+model Blacklist {
+  id           String   @id @default(cuid())
+  orgId        String
+  phone        String
+  reason       String
+  approvedById String
+  createdAt    DateTime @default(now())
+
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  approvedBy User         @relation(fields: [approvedById], references: [id])
+
+  @@unique([orgId, phone])
+}
+
+// ─────────────────────────────── Orders ───────────────────────────────
+
+model Order {
+  id                String        @id @default(cuid())
+  merchantId        String
+  storeId           String
+  /// per-merchant sequence number shown to humans
+  seq               Int
+  /// id in Shopify / DZBuild / sheet row etc.
+  externalId        String?
+  customerId        String
+  /// snapshot of the customer at order time (search + history)
+  customerName      String?
+  customerPhone     String
+  customerPhone2    String?
+  status            OrderStatus   @default(NOUVEAU)
+  statusGroup       StatusGroup   @default(CONFIRMATION)
+  /// 1..58
+  wilayaCode        Int
+  commune           String?
+  address           String?
+  /// نقطة دالة
+  landmark          String?
+  deliveryType      DeliveryType  @default(HOME)
+  subtotal          Int
+  shippingFee       Int           @default(0)
+  /// what the customer pays at the door
+  total             Int
+  /// utm / campaign / ad id
+  source            String?
+  note              String?
+  /// current owner (confirmation or follow-up agent)
+  assignedToId      String?
+  /// who confirmed — used for delivery-rate per agent
+  confirmedById     String?
+  podId             String?
+  /// 0..9
+  attemptCount      Int           @default(0)
+  /// 0..3
+  attemptDay        Int           @default(0)
+  /// scheduler pointer (callback, postponed date, next attempt)
+  nextActionAt      DateTime?
+  postponedUntil    DateTime?
+  cancelReason      CancelReason?
+  returnReason      ReturnReason?
+  reasonNote        String?
+  courierId         String?
+  trackingNumber    String?
+  labelUrl          String?
+  lastSendFailure   String?
+  lastCourierSyncAt DateTime?
+  shippedAt         DateTime?
+  deliveredAt       DateTime?
+  returnedAt        DateTime?
+  cashCollectedAt   DateTime?
+  confirmedAt       DateTime?
+  /// last time a human or the system touched the order (used by the 30-min reassignment rule)
+  lastActivityAt    DateTime      @default(now())
+  duplicateOfId     String?
+  /// e.g. HIGH_VALUE, REPEAT_REFUSER, BOT_CONFIRMED, MANUAL_PROOF
+  flags             String[]
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  merchant    Organization @relation("MerchantOrders", fields: [merchantId], references: [id], onDelete: Cascade)
+  store       Store        @relation(fields: [storeId], references: [id])
+  customer    Customer     @relation(fields: [customerId], references: [id])
+  assignedTo  User?        @relation("AssignedOrders", fields: [assignedToId], references: [id])
+  confirmedBy User?        @relation("ConfirmedOrders", fields: [confirmedById], references: [id])
+  pod         Pod?         @relation(fields: [podId], references: [id])
+  courier     Courier?     @relation(fields: [courierId], references: [id])
+  duplicateOf Order?       @relation("Duplicates", fields: [duplicateOfId], references: [id])
+  duplicates  Order[]      @relation("Duplicates")
+
+  items          OrderItem[]
+  events         OrderEvent[]
+  calls          CallAttempt[]
+  courierEvents  CourierEvent[]
+  tasks          Task[]
+  messages       MessageLog[]
+  stockMovements StockMovement[]
+
+  @@unique([merchantId, seq])
+  @@unique([storeId, externalId])
+  @@index([merchantId, status])
+  @@index([merchantId, createdAt])
+  @@index([assignedToId, status])
+  @@index([nextActionAt])
+  @@index([customerId])
+  @@index([customerPhone])
+  @@index([trackingNumber])
+}
+
+model OrderItem {
+  id        String  @id @default(cuid())
+  orderId   String
+  productId String
+  variantId String?
+  qty       Int
+  unitPrice Int
+
+  order   Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product         @relation(fields: [productId], references: [id])
+  variant ProductVariant? @relation(fields: [variantId], references: [id])
+
+  @@index([orderId])
+}
+
+/// immutable audit log of every change
+model OrderEvent {
+  id         String       @id @default(cuid())
+  orderId    String
+  /// null = system
+  actorId    String?
+  /// STATUS_CHANGE | ASSIGN | REASSIGN | NOTE | FIELD_EDIT | OVERRIDE | COURIER_SYNC | MESSAGE_SENT | CALL_LOGGED
+  type       String
+  fromStatus OrderStatus?
+  toStatus   OrderStatus?
+  payload    Json         @default("{}")
+  createdAt  DateTime     @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  actor User? @relation(fields: [actorId], references: [id])
+
+  @@index([orderId, createdAt])
+  @@index([actorId, createdAt])
+  @@index([type, createdAt])
+}
+
+model CallAttempt {
+  id            String      @id @default(cuid())
+  orderId       String
+  agentId       String
+  /// which outbound number (A/B/C)
+  phoneNumberId String?
+  /// 1..9
+  attemptNo     Int
+  /// 1..3
+  day           Int
+  slot          CallSlot
+  startedAt     DateTime
+  durationSec   Int?
+  outcome       CallOutcome
+  proof         CallProof
+  recordingUrl  String?
+  /// 0..10
+  qaScore       Int?
+  note          String?
+  createdAt     DateTime    @default(now())
+
+  order       Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  agent       User            @relation(fields: [agentId], references: [id])
+  phoneNumber OutboundNumber? @relation(fields: [phoneNumberId], references: [id])
+  qaReviews   QaReview[]
+
+  @@index([orderId])
+  @@index([agentId, startedAt])
+}
+
+/// rotating caller numbers
+model OutboundNumber {
+  id         String    @id @default(cuid())
+  orgId      String
+  /// "A", "B", "C"
+  label      String
+  msisdn     String
+  active     Boolean   @default(true)
+  /// computed daily
+  answerRate Float?
+  /// flagged as spam → retired
+  burnedAt   DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  org   Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  calls CallAttempt[]
+
+  @@index([orgId])
+}
+
+// ─────────────────────────────── Couriers ───────────────────────────────
+
+model Courier {
+  id           String   @id @default(cuid())
+  merchantId   String
+  /// "yalidine", "ecotrack:dhd", "zr", "procolis:abex", "noest", "maystro", "mock"
+  provider     String
+  /// YALIDINE | ECOTRACK | ZR | PROCOLIS | NOEST | MAYSTRO | MOCK
+  family       String
+  name         String
+  /// EcoTrack tenants
+  baseHost     String?
+  /// encrypted at rest
+  credentials  String?
+  originWilaya Int?
+  autoValidate Boolean  @default(false)
+  isDefault    Boolean  @default(false)
+  paused       Boolean  @default(false)
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  merchant       Organization   @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  orders         Order[]
+  routes         CourierRoute[] @relation("RouteCourier")
+  fallbackRoutes CourierRoute[] @relation("RouteFallbackCourier")
+  payouts        CodPayout[]
+
+  @@index([merchantId])
+}
+
+/// which courier for which wilaya
+model CourierRoute {
+  id                String        @id @default(cuid())
+  merchantId        String
+  /// null = default
+  wilayaCode        Int?
+  deliveryType      DeliveryType?
+  courierId         String
+  fallbackCourierId String?
+  priority          Int           @default(0)
+
+  merchant        Organization @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  courier         Courier      @relation("RouteCourier", fields: [courierId], references: [id], onDelete: Cascade)
+  fallbackCourier Courier?     @relation("RouteFallbackCourier", fields: [fallbackCourierId], references: [id])
+
+  @@index([merchantId, wilayaCode])
+}
+
+model Wilaya {
+  /// 1..58
+  code   Int    @id
+  nameFr String
+  nameAr String
+
+  communes Commune[]
+}
+
+model Commune {
+  id         String @id @default(cuid())
+  wilayaCode Int
+  nameFr     String
+  nameAr     String
+
+  wilaya    Wilaya            @relation(fields: [wilayaCode], references: [code])
+  providers ProviderCommune[]
+  desks     ProviderDesk[]
+
+  @@unique([wilayaCode, nameFr])
+}
+
+model ProviderCommune {
+  id          String  @id @default(cuid())
+  provider    String
+  communeId   String
+  providerRef String
+  hasDesk     Boolean @default(false)
+
+  commune Commune @relation(fields: [communeId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, communeId])
+}
+
+model ProviderDesk {
+  id          String  @id @default(cuid())
+  provider    String
+  communeId   String
+  providerRef String
+  name        String
+  address     String?
+  phone       String?
+
+  commune Commune @relation(fields: [communeId], references: [id], onDelete: Cascade)
+
+  @@index([provider, communeId])
+}
+
+/// courier payment statements
+model CodPayout {
+  id           String   @id @default(cuid())
+  courierId    String
+  periodStart  DateTime
+  periodEnd    DateTime
+  fileUrl      String
+  totalAmount  Int
+  matchedCount Int
+  gapCount     Int
+  createdAt    DateTime @default(now())
+
+  courier Courier @relation(fields: [courierId], references: [id], onDelete: Cascade)
+}
+
+/// raw sync log
+model CourierEvent {
+  id           String       @id @default(cuid())
+  orderId      String
+  provider     String
+  rawStatus    String
+  mappedStatus OrderStatus?
+  payload      Json         @default("{}")
+  receivedAt   DateTime     @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, receivedAt])
+  @@index([provider, rawStatus])
+}
+
+// ─────────────────────────────── Work items ───────────────────────────────
+
+/// rescue / follow-up work items with SLA
+model Task {
+  id         String    @id @default(cuid())
+  orderId    String
+  type       TaskType
+  assigneeId String?
+  dueAt      DateTime
+  doneAt     DateTime?
+  result     String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  order    Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  assignee User? @relation(fields: [assigneeId], references: [id])
+
+  @@index([assigneeId, doneAt, dueAt])
+  @@index([orderId])
+}
+
+model MessageLog {
+  id       String     @id @default(cuid())
+  orderId  String?
+  channel  MsgChannel
+  template String
+  to       String
+  status   String
+  payload  Json       @default("{}")
+  sentAt   DateTime   @default(now())
+
+  order Order? @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@unique([orderId, template])
+  @@index([to])
+}
+
+// ─────────────────────────────── Stock ───────────────────────────────
+
+model Warehouse {
+  id         String   @id @default(cuid())
+  merchantId String
+  name       String
+  wilayaCode Int
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  merchant   Organization @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  stockItems StockItem[]
+
+  @@index([merchantId])
+}
+
+model StockItem {
+  id          String  @id @default(cuid())
+  warehouseId String
+  productId   String
+  variantId   String?
+  onHand      Int     @default(0)
+  reserved    Int     @default(0)
+
+  warehouse Warehouse       @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  product   Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variant   ProductVariant? @relation(fields: [variantId], references: [id])
+  movements StockMovement[]
+
+  @@unique([warehouseId, productId, variantId])
+}
+
+model StockMovement {
+  id          String        @id @default(cuid())
+  stockItemId String
+  type        StockMoveType
+  qty         Int
+  orderId     String?
+  note        String?
+  actorId     String?
+  createdAt   DateTime      @default(now())
+
+  stockItem StockItem @relation(fields: [stockItemId], references: [id], onDelete: Cascade)
+  order     Order?    @relation(fields: [orderId], references: [id])
+  actor     User?     @relation(fields: [actorId], references: [id])
+
+  @@index([stockItemId, createdAt])
+}
+
+// ─────────────────────────────── Quality ───────────────────────────────
+
+model QaReview {
+  id         String   @id @default(cuid())
+  callId     String
+  reviewerId String
+  /// per criterion (section 14)
+  scores     Json
+  total      Int
+  /// lie / hidden fee => 0
+  zeroed     Boolean  @default(false)
+  note       String
+  createdAt  DateTime @default(now())
+
+  call     CallAttempt @relation(fields: [callId], references: [id], onDelete: Cascade)
+  reviewer User        @relation(fields: [reviewerId], references: [id])
+
+  @@index([callId])
+}
+
+model Warning {
+  id         String   @id @default(cuid())
+  userId     String
+  orgId      String
+  level      Int
+  reason     String
+  issuedById String
+  createdAt  DateTime @default(now())
+
+  user     User         @relation("WarningsReceived", fields: [userId], references: [id], onDelete: Cascade)
+  org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  issuedBy User         @relation("WarningsIssued", fields: [issuedById], references: [id])
+
+  @@index([orgId, userId])
+}
+
+// ─────────────────────────────── Team ───────────────────────────────
+
+model Shift {
+  id       String @id @default(cuid())
+  orgId    String
+  userId   String
+  /// 0 = Sunday .. 6 = Saturday (org timezone)
+  weekday  Int
+  /// minutes since midnight
+  startMin Int
+  endMin   Int
+
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, userId, weekday])
+}
+
+// ─────────────────────────────── Billing ───────────────────────────────
+
+model Invoice {
+  id          String        @id @default(cuid())
+  contractId  String
+  periodStart DateTime
+  periodEnd   DateTime
+  /// delivered count × unit price, fixed fee, minimum adjustment
+  lines       Json
+  total       Int
+  status      InvoiceStatus @default(DRAFT)
+  pdfUrl      String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  contract ServiceContract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@index([contractId, periodStart])
+}
+
+// ─────────────────────────────── Platform / API ───────────────────────────────
+
+/// Public API keys: Authorization: Bearer <keyId>.<secret>. Secret is shown once; only its hash is stored.
+model ApiKey {
+  id          String    @id @default(cuid())
+  orgId       String
+  name        String
+  keyId       String    @unique
+  secretHash  String
+  scopes      String[]
+  lastUsedAt  DateTime?
+  revokedAt   DateTime?
+  createdById String?
+  createdAt   DateTime  @default(now())
+
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy User?        @relation(fields: [createdById], references: [id])
+
+  @@index([orgId])
+}
+
+/// Idempotency-Key storage for the public API (24 h). Replays return the stored response.
+model IdempotencyKey {
+  id           String   @id @default(cuid())
+  orgId        String
+  key          String
+  method       String
+  path         String
+  requestHash  String
+  statusCode   Int
+  responseBody Json
+  createdAt    DateTime @default(now())
+  expiresAt    DateTime
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, key])
+  @@index([expiresAt])
+}
+
+/// Org-level audit log (logins, exports, API keys, impersonation, settings). Order changes live in OrderEvent.
+model AuditLog {
+  id         String   @id @default(cuid())
+  orgId      String
+  actorId    String?
+  action     String
+  targetType String?
+  targetId   String?
+  payload    Json     @default("{}")
+  ip         String?
+  createdAt  DateTime @default(now())
+
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  actor User?        @relation(fields: [actorId], references: [id])
+
+  @@index([orgId, createdAt])
+  @@index([orgId, action])
+}
+
+/// SaaS merchants may rename status labels (codes never change).
+model StatusLabelOverride {
+  id         String      @id @default(cuid())
+  merchantId String
+  code       OrderStatus
+  labelFr    String?
+  labelAr    String?
+
+  merchant Organization @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@unique([merchantId, code])
+}
