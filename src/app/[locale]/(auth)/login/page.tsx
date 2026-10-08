@@ -1,6 +1,8 @@
 import { redirect } from "next/navigation";
 import { getTranslations } from "next-intl/server";
-import { getCurrentContext } from "@/lib/auth/session";
+import { getCurrentContext, getSessionUser } from "@/lib/auth/session";
+import { logoutAction } from "@/lib/auth/actions";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { LocaleSwitcher } from "@/components/layout/locale-switcher";
 import { LoginForm } from "./login-form";
 
@@ -8,6 +10,7 @@ export default async function LoginPage({ params }: { params: Promise<{ locale: 
   const { locale } = await params;
   const ctx = await getCurrentContext();
   if (ctx) redirect(`/${locale}/dashboard`);
+  const sessionUser = await getSessionUser();
   const t = await getTranslations("auth");
   const tc = await getTranslations("common");
   return (
@@ -20,6 +23,17 @@ export default async function LoginPage({ params }: { params: Promise<{ locale: 
           </div>
           <LocaleSwitcher locale={locale} />
         </div>
+        {sessionUser ? (
+          <Alert variant="destructive" data-testid="no-membership">
+            <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
+              <span>{t("noMembership")}</span>
+              <form action={logoutAction}>
+                <input type="hidden" name="locale" value={locale} />
+                <button type="submit" className="underline">{tc("signOut")}</button>
+              </form>
+            </AlertDescription>
+          </Alert>
+        ) : null}
         <LoginForm locale={locale} />
         <p className="text-xs text-muted-foreground" data-testid="demo-hint">
           {t("demoHint")}

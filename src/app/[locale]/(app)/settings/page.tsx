@@ -2,15 +2,16 @@ import { getTranslations } from "next-intl/server";
 import { KeyRound, ShieldCheck, Tags } from "lucide-react";
 import { Link } from "@/i18n/navigation";
 import { requirePageRole } from "@/lib/auth/guards";
+import { hasRole } from "@/lib/tenant";
 import { PageHeader } from "@/components/page-header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 export default async function SettingsPage({ params }: { params: Promise<{ locale: string }> }) {
   const { locale } = await params;
-  await requirePageRole(locale, ["ORG_OWNER", "SUPERVISOR"]);
+  const ctx = await requirePageRole(locale, ["ORG_OWNER", "SUPERVISOR"]);
   const t = await getTranslations("settings");
   const items = [
-    { href: "/settings/api-keys", title: t("apiKeys.title"), description: t("apiKeys.description"), icon: KeyRound },
+    ...(hasRole(ctx, ["ORG_OWNER"]) ? [{ href: "/settings/api-keys", title: t("apiKeys.title"), description: t("apiKeys.description"), icon: KeyRound }] : []),
     { href: "/settings/security", title: t("security.title"), description: t("security.description"), icon: ShieldCheck },
     { href: "/settings/statuses", title: t("statuses.title"), description: t("statuses.description"), icon: Tags },
   ];

@@ -7,7 +7,7 @@ import { ApiKeysClient } from "./api-keys-client";
 
 export default async function ApiKeysPage({ params }: { params: Promise<{ locale: string }> }) {
   const { locale } = await params;
-  const ctx = await requirePageRole(locale, ["ORG_OWNER", "SUPERVISOR"]);
+  const ctx = await requirePageRole(locale, ["ORG_OWNER"]);
   const t = await getTranslations("settings.apiKeys");
   const keys = await prisma.apiKey.findMany({
     where: { orgId: ctx.orgId },
