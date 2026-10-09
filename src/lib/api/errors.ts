@@ -13,6 +13,7 @@ export type ApiErrorCode =
   | "conflict"
   | "illegal_transition"
   | "precondition_failed"
+  | "intake_refused"
   | "internal_error";
 
 export class ApiError extends Error {

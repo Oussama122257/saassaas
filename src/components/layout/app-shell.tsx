@@ -1,6 +1,8 @@
 import type { ReactNode } from "react";
 import { getTranslations } from "next-intl/server";
-import { ClipboardList, LayoutDashboard, ScrollText, Settings, LogOut } from "lucide-react";
+import { ClipboardList, LayoutDashboard, ScrollText, Settings, LogOut, PhoneCall, Users, PackageX } from "lucide-react";
+import { prisma } from "@/lib/db";
+import { AvailabilityToggle } from "./availability-toggle";
 import { Link } from "@/i18n/navigation";
 import type { TenantContext } from "@/lib/tenant";
 import { SUPERVISOR_PLUS, hasRole } from "@/lib/tenant";
@@ -16,10 +18,15 @@ export async function AppShell({ ctx, locale, children }: { ctx: TenantContext; 
 
   const items = [
     { href: "/dashboard", label: t("dashboard"), icon: LayoutDashboard, show: true },
+    { href: "/queue", label: t("queue"), icon: PhoneCall, show: hasRole(ctx, ["CONFIRMATION_AGENT", "FOLLOWUP_AGENT"]) && !ctx.isPlatformAdmin },
     { href: "/orders", label: t("orders"), icon: ClipboardList, show: true },
+    { href: "/team", label: t("team"), icon: Users, show: hasRole(ctx, ["ORG_OWNER", "SUPERVISOR"]) },
+    { href: "/unmatched", label: t("unmatched"), icon: PackageX, show: hasRole(ctx, ["ORG_OWNER", "SUPERVISOR"]) },
     { href: "/audit", label: t("audit"), icon: ScrollText, show: hasRole(ctx, SUPERVISOR_PLUS) },
     { href: "/settings", label: t("settings"), icon: Settings, show: hasRole(ctx, ["ORG_OWNER", "SUPERVISOR"]) },
   ].filter((i) => i.show);
+  const isAgent = ["CONFIRMATION_AGENT", "FOLLOWUP_AGENT"].includes(ctx.role);
+  const membership = isAgent ? await prisma.membership.findUnique({ where: { userId_orgId: { userId: ctx.userId, orgId: ctx.orgId } }, select: { availability: true } }) : null;
 
   return (
     <div className="flex min-h-screen flex-col md:flex-row">
@@ -45,6 +52,7 @@ export async function AppShell({ ctx, locale, children }: { ctx: TenantContext; 
             <div className="truncate text-sm font-medium">{ctx.userName}</div>
             <div className="text-xs text-muted-foreground">{tr(ctx.role)}</div>
           </div>
+          {membership ? <AvailabilityToggle value={membership.availability} /> : null}
           <OrgSwitcher ctx={ctx} locale={locale} />
           <div className="flex items-center justify-between gap-2">
             <LocaleSwitcher locale={locale} />

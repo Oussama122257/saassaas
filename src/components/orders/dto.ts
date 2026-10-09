@@ -20,6 +20,8 @@ export interface OrderRowDto {
   trackingNumber: string | null;
   flags: string[];
   deliveryType: OrderListRow["deliveryType"];
+  isRepeatCustomer: boolean;
+  mappingErrors: string[];
 }
 
 export function toOrderRowDto(r: OrderListRow): OrderRowDto {
@@ -42,5 +44,7 @@ export function toOrderRowDto(r: OrderListRow): OrderRowDto {
     trackingNumber: r.trackingNumber,
     flags: r.flags,
     deliveryType: r.deliveryType,
+    isRepeatCustomer: r.isRepeatCustomer,
+    mappingErrors: r.mappingErrors,
   };
 }

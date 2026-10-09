@@ -1,5 +1,5 @@
 import { getTranslations } from "next-intl/server";
-import { KeyRound, ShieldCheck, Tags } from "lucide-react";
+import { KeyRound, ShieldCheck, Tags, Store, SlidersHorizontal } from "lucide-react";
 import { Link } from "@/i18n/navigation";
 import { requirePageRole } from "@/lib/auth/guards";
 import { hasRole } from "@/lib/tenant";
@@ -11,6 +11,8 @@ export default async function SettingsPage({ params }: { params: Promise<{ local
   const ctx = await requirePageRole(locale, ["ORG_OWNER", "SUPERVISOR"]);
   const t = await getTranslations("settings");
   const items = [
+    { href: "/settings/stores", title: t("stores.title"), description: t("stores.description"), icon: Store },
+    { href: "/settings/operations", title: t("operations.title"), description: t("operations.description"), icon: SlidersHorizontal },
     ...(hasRole(ctx, ["ORG_OWNER"]) ? [{ href: "/settings/api-keys", title: t("apiKeys.title"), description: t("apiKeys.description"), icon: KeyRound }] : []),
     { href: "/settings/security", title: t("security.title"), description: t("security.description"), icon: ShieldCheck },
     { href: "/settings/statuses", title: t("statuses.title"), description: t("statuses.description"), icon: Tags },

@@ -10,6 +10,9 @@ import { QueueChips } from "@/components/orders/queue-chips";
 import { OrderFilters } from "@/components/orders/order-filters";
 import { OrdersTable } from "@/components/orders/orders-table";
 import { toOrderRowDto } from "@/components/orders/dto";
+import { Link } from "@/i18n/navigation";
+import { Button } from "@/components/ui/button";
+import { isReadOnly } from "@/lib/tenant";
 
 export const metadata: Metadata = { title: "Orders" };
 
@@ -36,7 +39,18 @@ export default async function OrdersPage({ params, searchParams }: { params: Pro
 
   return (
     <div className="space-y-4">
-      <PageHeader title={t("title")} description={t("count", { count: result.total })} />
+      <PageHeader
+        title={t("title")}
+        description={t("count", { count: result.total })}
+        actions={
+          !isReadOnly(ctx) && ctx.role !== "WAREHOUSE" ? (
+            <>
+              <Button asChild size="sm"><Link href="/orders/new" data-testid="new-order">{t("newOrder")}</Link></Button>
+              {isSupervisorPlus(ctx) ? <Button asChild size="sm" variant="outline"><Link href="/orders/import">{t("import")}</Link></Button> : null}
+            </>
+          ) : null
+        }
+      />
       <QueueChips chips={chips} active={filters.chip} locale={locale} baseQuery={baseQuery} />
       <OrderFilters
         options={{ stores: options.stores, merchants: options.merchants, agents: options.agents.filter((a) => a.role !== "SUPERVISOR"), pods: options.pods }}

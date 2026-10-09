@@ -3,6 +3,13 @@ import path from "node:path";
 
 const alias = { "@": path.resolve(__dirname, "src") };
 
+// TEST_DATABASE_URL (and friends) may live in .env for local runs.
+try {
+  process.loadEnvFile?.(".env");
+} catch {
+  /* no .env: rely on the environment */
+}
+
 export default defineConfig({
   test: {
     globals: true,

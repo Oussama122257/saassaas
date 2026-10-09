@@ -156,7 +156,7 @@ describe("confirmation rules", () => {
     expect(r.order.confirmedAt).not.toBeNull();
     const job = memoryJobs.find((j) => j.name === "order.status_changed" && (j.data as { to: string; orderId: string }).to === "CONFIRMEE" && (j.data as { orderId: string }).orderId === o.id);
     expect(job).toBeDefined();
-    expect((job!.data as { sideEffects: string[] }).sideEffects).toEqual(["SEND_WRITTEN_CONFIRMATION", "RESERVE_STOCK", "HANDOFF_TO_FOLLOWUP"]);
+    expect((job!.data as { sideEffects: string[] }).sideEffects).toEqual(["SEND_WRITTEN_CONFIRMATION", "RESERVE_STOCK", "HANDOFF_TO_FOLLOWUP", "WRITE_BACK"]);
   });
 
   it("cancel requires a reason (and a note for OTHER); postpone is capped at 7 days", async () => {

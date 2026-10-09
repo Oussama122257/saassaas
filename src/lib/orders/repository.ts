@@ -5,6 +5,7 @@ import type { ApiKeyContext } from "@/lib/api/keys";
 import { normalizePhone } from "@/lib/phone";
 import { addHours } from "@/lib/time";
 import { CONFIRMATION_STATUSES } from "./statuses";
+import { toCsv } from "@/lib/csv";
 
 /**
  * Read side for orders. Every function takes a scope (signed-in user or API key) and adds the
@@ -152,6 +153,9 @@ export const orderDetailInclude = {
   courierEvents: { orderBy: { receivedAt: "desc" }, take: 50 },
   tasks: { include: { assignee: { select: { id: true, name: true } } }, orderBy: { dueAt: "asc" } },
   messages: { orderBy: { sentAt: "desc" }, take: 50 },
+  comments: { include: { author: { select: { name: true } } }, orderBy: { createdAt: "desc" }, take: 100 },
+  unmatchedLines: { where: { resolvedProductId: null } },
+  lockedBy: { select: { id: true, name: true } },
 } satisfies Prisma.OrderInclude;
 
 export type OrderDetail = Prisma.OrderGetPayload<{ include: typeof orderDetailInclude }>;
@@ -222,43 +226,45 @@ export async function orderFilterOptions(ctx: TenantContext) {
 }
 
 /** CSV export (section 16 bulk actions). Phones are masked for client viewers (section 21). */
+export const EXPORT_HEADER = ["seq", "id", "external_id", "created_at", "status", "attempts", "store", "customer_name", "phone", "phone2", "wilaya", "commune", "address", "landmark", "delivery_type", "items", "subtotal", "shipping_fee", "total", "assigned_to", "confirmed_by", "courier", "tracking", "source", "repeat_customer"];
+
+/** Export rows (CSV and Excel share them). Phones are masked for read-only client roles (section 21). */
+export function ordersToRows(rows: OrderListRow[], opts: { maskPhones: boolean }): unknown[][] {
+  const mask = (p: string | null) => (!p ? "" : opts.maskPhones ? `${p.slice(0, 2)}******${p.slice(-2)}` : p);
+  return [
+    EXPORT_HEADER,
+    ...rows.map((r) => [
+      r.seq,
+      r.id,
+      r.externalName ?? r.externalId ?? "",
+      r.createdAt.toISOString(),
+      r.status,
+      r.attemptCount,
+      r.store.name,
+      r.customerName ?? "",
+      mask(r.customerPhone),
+      mask(r.customerPhone2),
+      r.wilayaCode,
+      r.commune ?? "",
+      r.address ?? "",
+      r.landmark ?? "",
+      r.deliveryType,
+      r.items.map((i) => `${i.qty}x ${i.product.name}${i.variant ? ` (${i.variant.name})` : ""}`).join(" | "),
+      r.subtotal,
+      r.shippingFee,
+      r.total,
+      r.assignedTo?.name ?? "",
+      r.confirmedBy?.name ?? "",
+      r.courier?.name ?? "",
+      r.trackingNumber ?? "",
+      r.source ?? "",
+      r.isRepeatCustomer ? 1 : 0,
+    ]),
+  ];
+}
+
 export function ordersToCsv(rows: OrderListRow[], opts: { maskPhones: boolean; locale: string }): string {
-  const esc = (v: unknown) => {
-    const s = v === null || v === undefined ? "" : String(v);
-    return /[",\n;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-  };
-  const header = ["seq", "id", "created_at", "status", "store", "customer_name", "phone", "wilaya", "commune", "address", "delivery_type", "items", "subtotal", "shipping_fee", "total", "assigned_to", "confirmed_by", "courier", "tracking", "source"];
-  const lines = [header.join(",")];
-  for (const r of rows) {
-    const phone = opts.maskPhones ? `${r.customerPhone.slice(0, 2)}******${r.customerPhone.slice(-2)}` : r.customerPhone;
-    lines.push(
-      [
-        r.seq,
-        r.id,
-        r.createdAt.toISOString(),
-        r.status,
-        r.store.name,
-        r.customerName ?? "",
-        phone,
-        r.wilayaCode,
-        r.commune ?? "",
-        r.address ?? "",
-        r.deliveryType,
-        r.items.map((i) => `${i.qty}x ${i.product.name}${i.variant ? ` (${i.variant.name})` : ""}`).join(" | "),
-        r.subtotal,
-        r.shippingFee,
-        r.total,
-        r.assignedTo?.name ?? "",
-        r.confirmedBy?.name ?? "",
-        r.courier?.name ?? "",
-        r.trackingNumber ?? "",
-        r.source ?? "",
-      ]
-        .map(esc)
-        .join(","),
-    );
-  }
-  return `﻿${lines.join("\n")}`;
+  return toCsv(ordersToRows(rows, opts));
 }
 
 // ─────────────────────────────── audit log reads ───────────────────────────────

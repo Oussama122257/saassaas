@@ -19,6 +19,9 @@ import { StatusChangeDialog } from "@/components/orders/status-change-dialog";
 import { AssignDialog } from "@/components/orders/assign-dialog";
 import { NoteForm } from "@/components/orders/note-form";
 import { OrderTimeline } from "@/components/orders/order-timeline";
+import { CommentsPanel } from "@/components/orders/comments-panel";
+import { UnmatchedLines } from "@/components/orders/unmatched-lines";
+import { prisma } from "@/lib/db";
 
 export default async function OrderDetailPage({ params }: { params: Promise<{ locale: string; id: string }> }) {
   const { locale, id } = await params;
@@ -32,9 +35,17 @@ export default async function OrderDetailPage({ params }: { params: Promise<{ lo
   const [history, options] = await Promise.all([customerHistory(ctx, order.merchantId, order.customerPhone, order.id), orderFilterOptions(ctx)]);
   const agents = options.agents.filter((a) => a.role !== "SUPERVISOR");
   const readOnly = isReadOnly(ctx);
+  const HIDDEN_RULES = ["CLAIM", "LOCK_RELEASE"];
   const targets = readOnly
     ? []
-    : allowedTargets(order.status, actorRole(ctx)).map(({ to, rule }) => ({ to, ruleId: rule.id, label: statusLabel(to, locale) }));
+    : allowedTargets(order.status, actorRole(ctx))
+        .filter(({ rule }) => !HIDDEN_RULES.includes(rule.id))
+        .map(({ to, rule }) => ({ to, ruleId: rule.id, label: statusLabel(to, locale) }));
+  const products = order.unmatchedLines.length
+    ? await prisma.product.findMany({ where: { merchantId: order.merchantId }, select: { id: true, name: true, variants: { select: { id: true, name: true } } }, orderBy: { name: "asc" } })
+    : [];
+  // managed service: the merchant (client viewer) may comment but never change a status (section 19c.5)
+  const canComment = ctx.role !== "READ_ONLY" && ctx.role !== "MARKETER";
   const canOverride = !readOnly && isSupervisorPlus(ctx);
   const overrideOptions = ALL_STATUSES.filter((s) => s !== "INJOIGNABLE" && s !== order.status).map((code) => ({ code, label: statusLabel(code, locale) }));
   const ar = locale.startsWith("ar");
@@ -42,7 +53,7 @@ export default async function OrderDetailPage({ params }: { params: Promise<{ lo
   return (
     <div className="space-y-6">
       <PageHeader
-        title={t("title", { seq: order.seq })}
+        title={`${t("title", { seq: order.seq })}${order.externalName ? ` · ${order.externalName}` : ""}`}
         description={`${order.store.name} · ${formatDateTime(order.createdAt, locale, tz)}${order.externalId ? ` · ${t("externalId")}: ${order.externalId}` : ""}`}
         actions={
           <>
@@ -53,6 +64,13 @@ export default async function OrderDetailPage({ params }: { params: Promise<{ lo
         }
       />
 
+      {order.lockedBy ? <Badge variant="outline">🔒 {order.lockedBy.name}</Badge> : null}
+      {order.mappingErrors.length > 0 ? (
+        <div className="rounded-md border border-amber-400 bg-amber-50 p-2 text-sm dark:bg-amber-950/30" data-testid="mapping-errors">
+          <span className="font-mono">{order.mappingErrors.join(", ")}</span>{order.reasonNote ? ` — ${order.reasonNote}` : ""}
+        </div>
+      ) : null}
+      {order.unmatchedLines.length > 0 && !readOnly ? <UnmatchedLines lines={order.unmatchedLines} products={products} orderId={order.id} /> : null}
       {order.flags.length > 0 ? (
         <div className="flex flex-wrap gap-1" data-testid="order-flags">
           {order.flags.map((f) => (
@@ -161,7 +179,11 @@ export default async function OrderDetailPage({ params }: { params: Promise<{ lo
           <TabsTrigger value="courier">{t("courierEvents")} ({order.courierEvents.length})</TabsTrigger>
           <TabsTrigger value="tasks">{t("tasks")} ({order.tasks.length})</TabsTrigger>
           <TabsTrigger value="messages">{t("messages")} ({order.messages.length})</TabsTrigger>
+          <TabsTrigger value="comments">{t("comments")} ({order.comments.length})</TabsTrigger>
         </TabsList>
+        <TabsContent value="comments" className="pt-4">
+          <CommentsPanel orderId={order.id} comments={order.comments} locale={locale} timezone={tz} readOnly={!canComment} />
+        </TabsContent>
         <TabsContent value="timeline" className="space-y-4 pt-4">
           {!readOnly ? <NoteForm locale={locale} orderId={order.id} /> : null}
           <OrderTimeline events={order.events} locale={locale} timezone={tz} />

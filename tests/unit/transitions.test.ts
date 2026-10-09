@@ -24,7 +24,8 @@ describe("transition table", () => {
     const rules = findRules("APPEL_3", "INJOIGNABLE");
     expect(rules).toHaveLength(1);
     expect(rules[0]!.actors).toEqual(["SYSTEM"]);
-    expect(rules[0]!.requires).toContainEqual({ kind: "ATTEMPT_COUNT_EQUALS", value: 9 });
+    expect(rules[0]!.requires).toContainEqual({ kind: "UNREACHABLE_READY" });
+    expect(rules[0]!.requires).toContainEqual({ kind: "SPACED_ATTEMPTS" });
     for (const role of ["CONFIRMATION_AGENT", "FOLLOWUP_AGENT", "SUPERVISOR", "ORG_OWNER", "PLATFORM_ADMIN", "WAREHOUSE"] as const) {
       expect(findRuleForActor("APPEL_3", "INJOIGNABLE", role)).toBeUndefined();
     }

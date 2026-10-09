@@ -48,7 +48,10 @@
     "team": "الفريق",
     "stock": "المخزون",
     "reports": "التقارير",
-    "portal": "بوابة العميل"
+    "portal": "بوابة العميل",
+    "stores": "المتاجر",
+    "newOrder": "طلبية جديدة",
+    "unmatched": "منتجات غير معروفة"
   },
   "roles": {
     "PLATFORM_ADMIN": "مدير المنصة",
@@ -139,7 +142,11 @@
       "done": "تمت إعادة تعيين {count} طلبية"
     },
     "empty": "لا توجد طلبيات مطابقة لهذه التصفية.",
-    "count": "{count} طلبية"
+    "count": "{count} طلبية",
+    "repeatBadge": "زبون متكرر",
+    "import": "استيراد CSV",
+    "exportExcel": "تصدير Excel",
+    "newOrder": "طلبية جديدة"
   },
   "order": {
     "title": "الطلبية #{seq}",
@@ -215,7 +222,14 @@
       "OVERRIDE": "تجاوز من المشرف",
       "COURIER_SYNC": "مزامنة شركة التوصيل",
       "MESSAGE_SENT": "رسالة مرسلة",
-      "CALL_LOGGED": "مكالمة مسجلة"
+      "CALL_LOGGED": "مكالمة مسجلة",
+      "LOCK": "فتحها العون (قفل)",
+      "UNLOCK": "تحرير القفل",
+      "LOCK_TIMEOUT": "انتهاء القفل",
+      "EXPIRE": "منتهية (مهمة الليل)",
+      "RECYCLE": "أعيد تدويرها (عون جديد)",
+      "REQUEUE": "أعيدت إلى القائمة",
+      "STUCK_ALERT": "تنبيه طلبية عالقة"
     },
     "taskTypes": {
       "RESCUE_NO_ANSWER": "إنقاذ: الزبون لا يرد",
@@ -237,7 +251,8 @@
     "outcomeLabel": "النتيجة",
     "proofLabel": "الإثبات",
     "durationLabel": "المدة (ث)",
-    "dayLabel": "اليوم / الفترة"
+    "dayLabel": "اليوم / الفترة",
+    "comments": "التعليقات"
   },
   "transition": {
     "changeStatus": "تغيير الحالة",
@@ -281,7 +296,11 @@
       "conditionMISSING": "ناقص",
       "note": "ملاحظة",
       "amount": "المبلغ المحصّل",
-      "assignedToId": "العون"
+      "assignedToId": "العون",
+      "deliverOn": "التوصيل يوم",
+      "reconfirmHint": "مكالمة إعادة التأكيد (سؤال واحد): هل ما زال الزبون موافقاً؟",
+      "releaseStock": "تحرير المخزون المحجوز",
+      "fakeReason": "سبب (طلبية وهمية)"
     },
     "errors": {
       "ORDER_NOT_FOUND": "الطلبية غير موجودة.",
@@ -291,7 +310,8 @@
       "INVALID_PAYLOAD": "حقول إلزامية ناقصة أو غير صالحة.",
       "PRECONDITION_FAILED": "شرط غير مستوفى: {detail}",
       "FORBIDDEN": "إجراء غير مسموح.",
-      "UNKNOWN": "خطأ غير متوقع."
+      "UNKNOWN": "خطأ غير متوقع.",
+      "ORDER_LOCKED": "عون آخر يعمل على هذه الطلبية."
     }
   },
   "audit": {
@@ -365,10 +385,303 @@
       "customFr": "تسمية مخصصة FR",
       "customAr": "تسمية مخصصة AR",
       "saved": "تم حفظ التسميات"
+    },
+    "stores": {
+      "title": "المتاجر والربط",
+      "description": "Shopify وDZBuild وGoogle Sheets والنماذج وربط الحقول."
+    },
+    "operations": {
+      "title": "القواعد التشغيلية",
+      "description": "أوقات الاتصال والمهل والتوزيع ومكافحة الاحتيال والأرقام."
     }
   },
   "errors": {
     "forbidden": "ليس لديك صلاحية الوصول إلى هذه الصفحة.",
     "notFound": "الصفحة غير موجودة."
+  },
+  "availability": {
+    "label": "التوفر",
+    "AVAILABLE": "متاح",
+    "BREAK": "استراحة",
+    "OFFLINE": "غير متصل",
+    "released": "تمت إعادة {count} طلبية إلى المجموعة"
+  },
+  "queue": {
+    "title": "قائمة المكالمات",
+    "subtitle": "طلبية واحدة في كل مرة تقدمها القائمة. لا تختار طلبياتك.",
+    "start": "الطلبية التالية",
+    "empty": "لا توجد طلبيات للمعالجة حالياً.",
+    "nextAt": "الطلبية القادمة مبرمجة: {time}",
+    "blocked": "المكالمات ممنوعة الآن ({reason}).",
+    "blockReason": {
+      "BEFORE_HOURS": "قبل 09:00",
+      "AFTER_HOURS": "بعد 21:00",
+      "PRAYER": "وقت الصلاة",
+      "FRIDAY_MIDDAY": "ظهر الجمعة"
+    },
+    "stats": {
+      "due": "للمعالجة",
+      "upcoming": "مبرمجة",
+      "callbacks": "معاودة الاتصال",
+      "newOrders": "لم يتم الاتصال بها",
+      "doneToday": "مكالمات اليوم"
+    },
+    "shortcuts": "اختصارات: 1–6 نتيجة المكالمة · C تأكيد · S تخطي"
+  },
+  "call": {
+    "locked": "مقفلة لك — تُحرَّر تلقائياً بعد {min} دقيقة دون إجراء",
+    "lockedByOther": "قيد المعالجة من طرف {name}",
+    "customer": "الزبون",
+    "repeat": "{count} طلبية سابقة",
+    "firstOrder": "أول طلبية",
+    "callNow": "اتصال",
+    "fromNumber": "الرقم المستعمل: {label}",
+    "order": "الطلبية",
+    "totalToPay": "المبلغ عند الباب",
+    "shipping": "منها التوصيل {fee}",
+    "script": "السكريبت",
+    "sellingPoints": "نقاط القوة",
+    "sizeGuide": "دليل المقاسات",
+    "faq": "أسئلة شائعة",
+    "noSheet": "لا توجد بطاقة منتج لهذا المنتج.",
+    "sheetNotApproved": "البطاقة غير معتمدة من التاجر",
+    "seriousness": "اختبار الجدية (4 أسئلة)",
+    "seriousnessQ1": "هذه الطلبية لك أنت؟",
+    "seriousnessQ2": "هل ستكون متاحاً يوم التوصيل؟",
+    "seriousnessQ3": "تؤكد المبلغ الإجمالي {total}؟",
+    "seriousnessQ4": "هل سيرد هذا الرقم على الموزع؟",
+    "attempt": "المحاولة {n}/{max}",
+    "logAttempt": "نتيجة هذه المكالمة",
+    "duration": "المدة (ثا)",
+    "callbackAt": "معاودة الاتصال في",
+    "manualProof": "بدون إثبات مكالمة (وضع يدوي، يظهر في المؤشرات)",
+    "nextAllowed": "المحاولة القادمة مسموحة: {time}",
+    "decision": "القرار",
+    "checklist": "قائمة التحقق (اختر الكل للتأكيد)",
+    "upsell": "بيع إضافي وافق عليه الزبون",
+    "upsellKindLabel": "النوع",
+    "upsellKind": {
+      "UPSELL": "بيع أعلى (كمية / حزمة)",
+      "CROSS_SELL": "بيع متقاطع (منتج آخر)"
+    },
+    "upsellProduct": "المنتج المضاف",
+    "qty": "الكمية",
+    "confirm": "تأكيد",
+    "confirmPostponed": "مؤكدة – توصيل لاحق",
+    "confirmOutOfStock": "تأكيد (بلا مخزون)",
+    "postpone": "تأجيل (غير مؤكدة)",
+    "toVerify": "للتحقق",
+    "cancel": "إلغاء",
+    "fake": "اقتراح طلبية وهمية",
+    "skip": "تخطي",
+    "reconfirm": "إعادة التأكيد والشحن",
+    "reconfirmCancel": "إلغاء (إعادة التأكيد)",
+    "reconfirmTitle": "إعادة التأكيد في التاريخ المتفق عليه",
+    "timeline": "المحاولات",
+    "comments": "التعليقات",
+    "commentPlaceholder": "تعليق…",
+    "addComment": "إضافة",
+    "unmatched": "منتجات غير معروفة: اربطها بمنتج",
+    "stock": "المخزون المتاح: {n}",
+    "done": "تم الحفظ",
+    "backToQueue": "العودة للقائمة",
+    "mappingErrors": "مشاكل عند الاستلام"
+  },
+  "comments": {
+    "tags": {
+      "NRP": "لا يرد",
+      "SMS_ENVOYE": "رسالة مرسلة",
+      "COULEUR_TAILLE": "اللون / المقاس",
+      "LIVREUR": "الموزع",
+      "SUIVI": "متابعة",
+      "ADRESSE": "العنوان",
+      "PRIX": "السعر",
+      "RAPPEL": "إعادة اتصال"
+    },
+    "quick": {
+      "nrpMsg": "nrp + msj",
+      "smsSent": "sms envoyé",
+      "livreur": "livreur ma 3aytch"
+    }
+  },
+  "manualOrder": {
+    "title": "طلبية جديدة",
+    "subtitle": "إدخال يدوي — تمر بنفس فحوصات طلبيات المتاجر.",
+    "store": "المتجر",
+    "externalId": "معرف الطلبية الخارجي (اختياري)",
+    "name": "اسم الزبون",
+    "phone": "الهاتف",
+    "phone2": "الهاتف 2",
+    "wilaya": "الولاية",
+    "commune": "البلدية",
+    "address": "العنوان",
+    "address2": "العنوان 2",
+    "landmark": "نقطة دالة",
+    "note": "ملاحظات",
+    "abandoned": "استرجاع سلة متروكة",
+    "product": "المنتج",
+    "variant": "النوع",
+    "qty": "الكمية",
+    "addLine": "إضافة منتج",
+    "deliveryType": "نوع التوصيل",
+    "home": "إلى المنزل",
+    "shippingFee": "سعر التوصيل",
+    "freeDelivery": "توصيل مجاني",
+    "total": "المبلغ الإجمالي",
+    "create": "إنشاء الطلبية"
+  },
+  "importOrders": {
+    "title": "استيراد الطلبيات (CSV / Excel)",
+    "subtitle": "احفظ ملف Excel بصيغة CSV ثم استورده. سطر واحد = طلبية واحدة.",
+    "store": "المتجر",
+    "hint": "الأعمدة المعروفة: external_id، name، phone، phone2، wilaya، commune، address، landmark، product أو sku، variant، qty، price، shipping_fee، total، delivery_type، note. إعادة استيراد نفس external_id لا تنشئ نسخة مكررة.",
+    "run": "استيراد",
+    "template": "نموذج CSV",
+    "result": "{created} منشأة، {existing} موجودة مسبقاً، {errors} خطأ"
+  },
+  "stores": {
+    "title": "المتاجر والربط",
+    "subtitle": "Shopify وDZBuild وGoogle Sheets والنماذج وAPI — كل الطلبيات تمر عبر نفس سلسلة الاستلام.",
+    "name": "الاسم",
+    "channel": "القناة",
+    "connection": "الاتصال",
+    "orders30d": "طلبيات 30 يوم",
+    "mappingErrors": "أخطاء الربط",
+    "lastSync": "آخر مزامنة",
+    "state": {
+      "CONNECTED": "متصل",
+      "DISCONNECTED": "غير متصل",
+      "ERROR": "خطأ"
+    },
+    "create": "إضافة متجر",
+    "createButton": "إنشاء",
+    "connect": "الربط",
+    "connectedNotice": "تم ربط المتجر. جارٍ استيراد المنتجات والطلبيات المفتوحة لآخر 7 أيام.",
+    "shopifyHelp": "أنشئ تطبيقاً مخصصاً في لوحة الشركاء ثم الصق النطاق ومعرف العميل والسر وابدأ التثبيت عبر OAuth.",
+    "clientId": "Client ID",
+    "clientSecret": "Client secret",
+    "install": "التثبيت على Shopify",
+    "reinstall": "إعادة التثبيت",
+    "backfill": "إعادة الاستيراد (منتجات + 7 أيام)",
+    "backfillQueued": "بدأ الاستيراد في الخلفية.",
+    "webhookEndpoint": "رابط الويب هوك (مع تحقق HMAC)",
+    "dzbuildHelp": "مفتاح DZBuild شخصي (خطة Enterprise ← الإعدادات ← API) بصيغة key_id.key_secret.",
+    "testAndSave": "اختبار وحفظ",
+    "testOk": "تم الاتصال بنجاح",
+    "syncNow": "مزامنة الآن",
+    "webhookUrl": "رابط الويب هوك لإدخاله في DZBuild",
+    "webhookSecret": "سر التوقيع",
+    "sheetHelp": "شارك الورقة بخيار «أي شخص لديه الرابط يمكنه العرض». يتم فحصها كل 10 دقائق.",
+    "hasHeader": "سطر العناوين",
+    "intakeTitle": "نموذج عام / ويب هوك عام",
+    "intakeHelp": "لصفحات الهبوط ومنصات المتاجر الأخرى: رمز + ربط الحقول أدناه.",
+    "createToken": "إنشاء رمز",
+    "rotateToken": "تجديد الرمز",
+    "intakeUrl": "رابط النموذج (POST)",
+    "intakeToken": "الرمز (X-Intake-Token)",
+    "genericWebhookUrl": "رابط الويب هوك العام",
+    "shownOnce": "انسخ هذه القيم الآن: لن تظهر مجدداً.",
+    "mapping": "ربط الحقول",
+    "mappingHelp": "مسار المصدر ← حقلنا. أمثلة: shipping_address.province · note_attributes[name=Wilaya].value · a | b · =\"STOP_DESK\" · columns.D. فارغ = القيمة الافتراضية.",
+    "preview": "معاينة على آخر 5 طلبيات",
+    "saveMapping": "حفظ الربط",
+    "noPayloads": "لم تصل أي طلبية بعد.",
+    "saved": "تم الحفظ",
+    "options": "الخيارات والمزامنة العكسية",
+    "writeBack": {
+      "tags": "وسم cc:<الحالة> على طلبية Shopify",
+      "cancel": "الإلغاء في المتجر (ملغية، وهمية، مكررة)",
+      "fulfill": "إنشاء الشحن مع رقم التتبع",
+      "markPaid": "تعليم كمدفوعة عند التوصيل",
+      "status": "إرسال الحالة (confirmed, shipped, delivered, returned)",
+      "note": "ملاحظة على الطلبية عند التعديل"
+    },
+    "backfillDays": "أيام السجل للاستيراد",
+    "active": "المتجر نشط",
+    "save": "حفظ"
+  },
+  "ops": {
+    "title": "القواعد التشغيلية",
+    "subtitle": "أوقات الاتصال والفترات الممنوعة والمهل والتوزيع ومكافحة الاحتيال. كل القواعد يطبقها النظام.",
+    "cadence": "وتيرة الاتصال (3 × 3)",
+    "minGap": "أدنى فارق بين محاولتين (د)",
+    "cadenceGap": "الفارق المبرمج (د)",
+    "firstCall": "أول مكالمة خلال (د)",
+    "maxPerRound": "محاولات لكل دورة",
+    "maxTotal": "الحد الأقصى للمحاولات",
+    "minSpaced": "محاولات متباعدة قبل وهمية/منتهية",
+    "strictSlots": "أوقات مقفلة (ترفض المحاولة خارج الوقت)",
+    "slot": {
+      "MORNING": "صباحاً",
+      "AFTERNOON": "بعد الظهر",
+      "EVENING": "مساءً"
+    },
+    "dayStart": "لا اتصال قبل",
+    "dayEnd": "لا اتصال بعد",
+    "prayer": "أوقات الصلاة الممنوعة",
+    "friday": "منع ظهر الجمعة (12:00–14:30)",
+    "minAnswered": "أدنى مدة لمكالمة مجابة (ثا)",
+    "highValue": "عتبة الطلبية عالية القيمة (دج)",
+    "manualProof": "السماح بمحاولات دون إثبات (تظهر في المؤشرات)",
+    "mandatoryNote": "ملاحظة إجبارية للملغية / الوهمية",
+    "lifecycle": "القفل والانتهاء وإعادة التدوير",
+    "lockTimeout": "تحرير القفل بعد (د)",
+    "untouched": "إعادة التوزيع إن لم تعالج بعد (د)",
+    "expiryDays": "الانتهاء بعد آخر يوم اتصال (أيام)",
+    "recycleCooldown": "مهلة قبل إعادة التدوير (أيام)",
+    "recycleRounds": "أقصى دورات إعادة التدوير",
+    "assignment": "التوزيع",
+    "strategy": "الطريقة",
+    "loadBalanced": "دوري حسب الحمل",
+    "percentage": "التوزيع بالنسبة المئوية",
+    "cap": "أقصى طلبيات مفتوحة لكل عون",
+    "totalPercent": "المجموع: {total}% (يجب أن يساوي 100%)",
+    "ownershipLock": "قفل الملكية: العون يعمل على طلبياته فقط",
+    "topAgents": "الطلبيات عالية القيمة ← أفضل الأعوان",
+    "requireShift": "التوزيع على الأعوان في الخدمة فقط",
+    "intake": "مكافحة الاحتيال عند الاستلام",
+    "ipLimit": "تحديد الطلبيات لكل IP (النماذج / API)",
+    "ipMax": "أقصى طلبيات",
+    "ipHours": "المدة (ساعات)",
+    "dupWindow": "مدة التكرار (س)",
+    "ipHint": "الافتراضي 3 / 12 س؛ 10 / 12 س موصى به خلف NAT للمتعاملين.",
+    "blacklistMode": "الأرقام في القائمة السوداء",
+    "blacklistFlag": "قبول مع تنبيه",
+    "blacklistRefuse": "رفض عند الاستلام",
+    "numbers": "الأرقام الصادرة (تناوب A ← B ← C)",
+    "numbersHint": "يحسب معدل الرد يومياً؛ الرقم تحت 25% لمدة 3 أيام يسحب (محروق).",
+    "burned": "محروق",
+    "deactivate": "تعطيل",
+    "activate": "تفعيل",
+    "add": "إضافة",
+    "save": "حفظ",
+    "saved": "تم الحفظ"
+  },
+  "team": {
+    "title": "الفريق",
+    "subtitle": "إحصائيات اليوم لكل عون والتوفر المباشر وأوقات العمل.",
+    "agent": "العون",
+    "pod": "الخلية",
+    "attempts": "المحاولات",
+    "confirmations": "التأكيدات",
+    "actions": "الإجراءات",
+    "assigned": "المسندة",
+    "lastActivity": "آخر نشاط",
+    "shifts": "أوقات العمل",
+    "save": "حفظ",
+    "weekday": {
+      "0": "أحد",
+      "1": "إثن",
+      "2": "ثلا",
+      "3": "أرب",
+      "4": "خمي",
+      "5": "جمع",
+      "6": "سبت"
+    }
+  },
+  "unmatched": {
+    "title": "منتجات غير معروفة",
+    "subtitle": "{count} طلبية بمنتج غير معروف. اربط كل SKU مرة واحدة وسيطبق تلقائياً بعدها.",
+    "empty": "لا شيء للربط."
   }
 }

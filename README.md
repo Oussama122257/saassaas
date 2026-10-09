@@ -2,7 +2,7 @@
 
 Multi-tenant SaaS for cash-on-delivery order confirmation, delivery follow-up, stock and fulfillment for e-commerce stores in Algeria. Bilingual (French / Arabic RTL).
 
-**Status: Phase 1 — Foundation** (see `SPEC` section 20). Phases 2–6 add the confirmation engine, messaging, couriers, QA/KPIs and the SaaS/client portal.
+**Status:** see [docs/PHASES.md](docs/PHASES.md) for what each phase delivered and how its acceptance criteria are tested. Spec: [docs/SPEC.md](docs/SPEC.md).
 
 ## Stack
 

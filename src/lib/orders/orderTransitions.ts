@@ -17,9 +17,11 @@ import {
 } from "@/lib/tenant";
 import { writeAuditLog } from "@/lib/audit";
 import { normalizePhone } from "@/lib/phone";
-import { resolveWilayaCode } from "@/lib/wilayas";
-import { addDays, addHours, endOfDayInTz, zonedParts } from "@/lib/time";
-import { statusGroupOf } from "./statuses";
+import { addDays, addHours, endOfDayInTz } from "@/lib/time";
+import { parseOrgSettings, type OrgSettings } from "@/lib/settings";
+import { checkAttempt, hasEnoughSpacedAttempts, planAttempt, slotOf, type AttemptRejection } from "@/lib/calls/slots";
+import { detectFakeSignals, validateAddress, type CommuneRef, type MappingError } from "@/lib/intake/validate";
+import { CLEAR_FAKE_REASONS, statusGroupOf } from "./statuses";
 import {
   attemptDayOf,
   findRules,
@@ -32,6 +34,8 @@ import {
 } from "./transitions";
 import { dispatchSideEffects } from "./sideEffects";
 
+export { DEFAULT_ORG_SETTINGS, parseOrgSettings, type OrgSettings } from "@/lib/settings";
+
 /**
  * The ONLY place that changes Order.status. Everything goes through transitionOrder() or
  * overrideOrderStatus(); both write an immutable OrderEvent row.
@@ -42,6 +46,7 @@ export type TransitionErrorCode =
   | "ILLEGAL_TRANSITION"
   | "FORBIDDEN_ACTOR"
   | "NOT_ORDER_OWNER"
+  | "ORDER_LOCKED"
   | "INVALID_PAYLOAD"
   | "PRECONDITION_FAILED";
 
@@ -62,27 +67,35 @@ export interface TransitionResult {
   ruleId: string;
 }
 
-export interface OrgSettings {
-  minAnsweredCallSec: number;
-  highValueThreshold: number;
-  manualCallProof: boolean;
-  mandatoryCancelNote: boolean;
-  riskyWilayas: number[];
-  maxOpenOrdersPerAgent: number;
+/** Settings + timezone + team org for an order (see src/lib/settings.ts for the resolution order). */
+export interface OpsContext {
+  settings: OrgSettings;
+  timezone: string;
+  /** org that owns the pod working the order (agency, or the merchant itself with its own team) */
+  teamOrgId: string | null;
 }
 
-export const DEFAULT_ORG_SETTINGS: OrgSettings = {
-  minAnsweredCallSec: 15,
-  highValueThreshold: 15000,
-  manualCallProof: false,
-  mandatoryCancelNote: false,
-  riskyWilayas: [],
-  maxOpenOrdersPerAgent: 40,
-};
-
-export function parseOrgSettings(raw: unknown): OrgSettings {
-  const s = (raw && typeof raw === "object" ? raw : {}) as Partial<OrgSettings>;
-  return { ...DEFAULT_ORG_SETTINGS, ...s };
+export async function loadOpsContext(db: DbClient, order: Pick<Order, "merchantId" | "podId">): Promise<OpsContext> {
+  const merchant = await db.organization.findUnique({ where: { id: order.merchantId }, select: { settings: true, timezone: true } });
+  let teamOrgId: string | null = null;
+  if (order.podId) {
+    const pod = await db.pod.findUnique({ where: { id: order.podId }, select: { orgId: true } });
+    teamOrgId = pod?.orgId ?? null;
+  }
+  if (!teamOrgId) {
+    const contract = await db.serviceContract.findFirst({
+      where: { merchantId: order.merchantId, status: { in: ["TRIAL", "ACTIVE"] } },
+      select: { agencyId: true },
+      orderBy: { startsAt: "asc" },
+    });
+    teamOrgId = contract?.agencyId ?? order.merchantId;
+  }
+  let teamSettings: unknown = {};
+  if (teamOrgId !== order.merchantId) {
+    const team = await db.organization.findUnique({ where: { id: teamOrgId }, select: { settings: true } });
+    teamSettings = team?.settings ?? {};
+  }
+  return { settings: parseOrgSettings(merchant?.settings, teamSettings), timezone: merchant?.timezone ?? "Africa/Algiers", teamOrgId };
 }
 
 function manualProofAllowed(settings: OrgSettings): boolean {
@@ -90,10 +103,7 @@ function manualProofAllowed(settings: OrgSettings): boolean {
 }
 
 function slotFor(date: Date, tz: string): CallSlot {
-  const { hour } = zonedParts(date, tz);
-  if (hour < 13) return "MORNING";
-  if (hour < 17) return "AFTERNOON";
-  return "EVENING";
+  return slotOf(date, tz);
 }
 
 function addFlag(flags: string[], flag: string): string[] {
@@ -119,19 +129,37 @@ async function loadOrder(db: DbClient, ctx: ActorContext, orderId: string): Prom
   return order;
 }
 
-async function loadMerchantSettings(db: DbClient, merchantId: string): Promise<{ settings: OrgSettings; timezone: string }> {
-  const org = await db.organization.findUnique({ where: { id: merchantId }, select: { settings: true, timezone: true } });
-  return { settings: parseOrgSettings(org?.settings), timezone: org?.timezone ?? "Africa/Algiers" };
+/** True when the order is claimed by someone else and the claim has not timed out. */
+export function lockedByOther(order: Pick<Order, "lockedById" | "lockedAt">, userId: string | null, lockTimeoutMin: number, now = new Date()): boolean {
+  if (!order.lockedById || !order.lockedAt) return false;
+  if (order.lockedById === userId) return false;
+  return now.getTime() - order.lockedAt.getTime() < lockTimeoutMin * 60_000;
+}
+
+const ATTEMPT_REJECTION_MESSAGES: Record<AttemptRejection, string> = {
+  FUTURE_ATTEMPT: "The attempt time is in the future",
+  BLOCKED_WINDOW: "Calls are not allowed at this time (before 09:00, after 21:00, prayer time or Friday midday)",
+  MIN_GAP: "Too soon after the previous attempt (minimum spacing between two attempts)",
+  OUTSIDE_SLOT: "This attempt must be made inside its slot window",
+  SAME_CALENDAR_DAY: "The first attempt of a new day must be on a later day than the previous attempt",
+  MAX_ATTEMPTS: "Maximum number of attempts reached",
+};
+
+async function roundAttemptDates(db: DbClient, order: Order): Promise<Date[]> {
+  const calls = await db.callAttempt.findMany({ where: { orderId: order.id, round: order.recycleRound }, select: { startedAt: true }, orderBy: { startedAt: "asc" } });
+  return calls.map((c) => c.startedAt);
 }
 
 async function checkRequirements(
   db: DbClient,
   rule: TransitionRule,
+  ctx: ActorContext,
   order: Order,
   to: OrderStatus,
   payload: Record<string, unknown>,
-  settings: OrgSettings,
+  ops: OpsContext,
 ): Promise<void> {
+  const { settings, timezone: tz } = ops;
   for (const req of rule.requires as readonly Requirement[]) {
     switch (req.kind) {
       case "ANSWERED_CALL": {
@@ -153,7 +181,7 @@ async function checkRequirements(
         }
         break;
       case "ATTEMPT_COUNT_LT":
-        if (order.attemptCount >= req.value) {
+        if (order.attemptCount >= Math.min(req.value, settings.calls.maxAttemptsPerRound)) {
           throw new TransitionError("PRECONDITION_FAILED", `Maximum of ${req.value} attempts reached`, { requirement: req.kind });
         }
         break;
@@ -168,12 +196,96 @@ async function checkRequirements(
         }
         break;
       }
+      case "CALL_TIMING": {
+        const call = payload.call as { startedAt?: Date } | undefined;
+        const startedAt = call?.startedAt ?? new Date();
+        const previous = await roundAttemptDates(db, order);
+        const totalAttempts = await db.callAttempt.count({ where: { orderId: order.id } });
+        const rejection = checkAttempt({ attemptNo: order.attemptCount + 1, startedAt, previous, totalAttempts, cfg: settings.calls, tz });
+        if (rejection) {
+          throw new TransitionError("PRECONDITION_FAILED", ATTEMPT_REJECTION_MESSAGES[rejection], { requirement: req.kind, rejection });
+        }
+        break;
+      }
+      case "SPACED_ATTEMPTS": {
+        const fakeReason = payload.fakeReason as string | undefined;
+        if (req.exemptClearFake && fakeReason && (CLEAR_FAKE_REASONS as readonly string[]).includes(fakeReason)) {
+          const calls = await db.callAttempt.count({ where: { orderId: order.id } });
+          if (calls === 0 && !order.flags.includes("INVALID_PHONE") && fakeReason === "INVALID_PHONE" && normalizePhone(order.customerPhone).valid) {
+            throw new TransitionError("PRECONDITION_FAILED", "Log at least one call before declaring the number invalid", { requirement: req.kind });
+          }
+          break;
+        }
+        const calls = await db.callAttempt.findMany({ where: { orderId: order.id }, select: { startedAt: true } });
+        if (!hasEnoughSpacedAttempts(calls.map((c) => c.startedAt), settings.calls, tz)) {
+          throw new TransitionError(
+            "PRECONDITION_FAILED",
+            `Requires at least ${settings.calls.minSpacedAttemptsToClose} properly spaced attempts across ${settings.calls.minSlotsToClose} time slots`,
+            { requirement: req.kind },
+          );
+        }
+        break;
+      }
+      case "UNREACHABLE_READY": {
+        const total = await db.callAttempt.count({ where: { orderId: order.id } });
+        if (order.attemptCount < settings.calls.maxAttemptsPerRound && total < settings.calls.maxAttemptsTotal) {
+          throw new TransitionError("PRECONDITION_FAILED", `Requires ${settings.calls.maxAttemptsPerRound} logged attempts (has ${order.attemptCount})`, { requirement: req.kind });
+        }
+        const answered = await db.callAttempt.count({ where: { orderId: order.id, round: order.recycleRound, outcome: "ANSWERED" } });
+        if (answered > 0) throw new TransitionError("PRECONDITION_FAILED", "The customer answered in this round; an agent must decide", { requirement: req.kind });
+        break;
+      }
+      case "LOCK_OWNER": {
+        if (ctx.kind === "system" || isSupervisorPlus(ctx)) break;
+        if (lockedByOther(order, ctx.userId, settings.lifecycle.lockTimeoutMin)) {
+          throw new TransitionError("ORDER_LOCKED", "Another agent is working on this order", { requirement: req.kind });
+        }
+        break;
+      }
+      case "LOCK_PREVIOUS_STATUS": {
+        const expected = order.lockPrevStatus ?? "ASSIGNEE";
+        if (to !== expected) throw new TransitionError("PRECONDITION_FAILED", `The lock returns the order to ${expected}`, { requirement: req.kind, expected });
+        break;
+      }
+      case "RECYCLE_AVAILABLE": {
+        if (order.recycleRound >= settings.lifecycle.maxRecycleRounds) {
+          throw new TransitionError("PRECONDITION_FAILED", "The recycle round was already used", { requirement: req.kind });
+        }
+        const since = order.expiredAt ?? order.lastActivityAt;
+        if (ctx.kind === "system" && Date.now() - since.getTime() < settings.lifecycle.recycleCooldownDays * 86_400_000) {
+          throw new TransitionError("PRECONDITION_FAILED", "Recycle cool-down has not passed", { requirement: req.kind });
+        }
+        const target = payload.assignedToId as string;
+        const previousAgents = await db.callAttempt.findMany({ where: { orderId: order.id }, select: { agentId: true }, distinct: ["agentId"] });
+        if (target === order.assignedToId || (ctx.kind === "system" && previousAgents.some((a) => a.agentId === target))) {
+          throw new TransitionError("PRECONDITION_FAILED", "A recycled order goes to a different agent", { requirement: req.kind });
+        }
+        break;
+      }
+      case "PAYLOAD_CALL_ANSWERED": {
+        const call = payload.call as { outcome: string; proof: string; durationSec?: number };
+        if (call.outcome !== "ANSWERED") throw new TransitionError("PRECONDITION_FAILED", "Requires an answered re-confirmation call", { requirement: req.kind });
+        if (call.proof === "NONE" && !manualProofAllowed(settings)) {
+          throw new TransitionError("PRECONDITION_FAILED", "A call without proof is rejected (manual mode is disabled)", { requirement: "CALL_PROOF" });
+        }
+        break;
+      }
+      case "CONFIRMED_POSTPONE_WINDOW": {
+        const until = payload.deliverOn as Date;
+        if (until.getTime() < Date.now() - 60_000) throw new TransitionError("INVALID_PAYLOAD", "The delivery date must be in the future", { requirement: req.kind });
+        if (until.getTime() > addDays(new Date(), settings.lifecycle.confirmedPostponeMaxDays).getTime() + 60_000) {
+          throw new TransitionError("INVALID_PAYLOAD", `The delivery date cannot be more than ${settings.lifecycle.confirmedPostponeMaxDays} days ahead`, { requirement: req.kind });
+        }
+        break;
+      }
       case "STOCK_ZERO": {
         const items = await db.orderItem.findMany({ where: { orderId: order.id }, select: { productId: true, variantId: true } });
-        const stock = await db.stockItem.findMany({
-          where: { OR: items.map((i) => ({ productId: i.productId, variantId: i.variantId ?? null })) },
-          select: { onHand: true, reserved: true },
-        });
+        const stock = items.length
+          ? await db.stockItem.findMany({
+              where: { OR: items.map((i) => ({ productId: i.productId, variantId: i.variantId ?? null })), warehouse: { merchantId: order.merchantId } },
+              select: { onHand: true, reserved: true },
+            })
+          : [];
         const available = stock.reduce((acc, s) => acc + (s.onHand - s.reserved), 0);
         if (available > 0) throw new TransitionError("PRECONDITION_FAILED", "Stock is available; confirm normally", { requirement: req.kind, available });
         break;
@@ -186,7 +298,8 @@ async function checkRequirements(
       case "NOTE_IF_OTHER": {
         const reason = (payload.cancelReason ?? payload.returnReason) as string | undefined;
         const note = (payload.reasonNote as string | undefined)?.trim();
-        if ((reason === "OTHER" || settings.mandatoryCancelNote) && !note) {
+        const mandatory = settings.mandatoryCancelNote && payload.cancelReason !== undefined;
+        if ((reason === "OTHER" || mandatory) && !note) {
           throw new TransitionError("INVALID_PAYLOAD", "A written note is required for this reason", { requirement: req.kind });
         }
         break;
@@ -208,6 +321,7 @@ async function checkRequirements(
 
 const DELIVERY_TASK_MAP: Partial<Record<OrderStatus, TaskType>> = {
   CLIENT_INJOIGNABLE_LIVREUR: "RESCUE_NO_ANSWER",
+  STOPDESK_SANS_REPONSE: "RESCUE_NO_ANSWER",
   REPORTE_CLIENT: "RESCHEDULE_CALL",
   ADRESSE_ERRONEE: "WRONG_ADDRESS",
   TENTATIVE_ECHOUEE: "FAILED_ATTEMPT_CALL",
@@ -222,9 +336,62 @@ async function followUpUserFor(db: DbClient, order: Order): Promise<string | nul
   return pod?.followUpUserId ?? null;
 }
 
+/** Next outbound number for this order: A → B → C rotation over active, non-burned numbers of the team org. */
+export async function pickOutboundNumber(db: DbClient, teamOrgId: string | null, orderId: string): Promise<string | undefined> {
+  if (!teamOrgId) return undefined;
+  const numbers = await db.outboundNumber.findMany({ where: { orgId: teamOrgId, active: true, burnedAt: null }, orderBy: { label: "asc" }, select: { id: true } });
+  if (numbers.length === 0) return undefined;
+  const last = await db.callAttempt.findFirst({ where: { orderId, phoneNumberId: { not: null } }, orderBy: { startedAt: "desc" }, select: { phoneNumberId: true } });
+  const idx = last ? numbers.findIndex((n) => n.id === last.phoneNumberId) : -1;
+  return numbers[(idx + 1) % numbers.length]!.id;
+}
+
 interface ApplyResult {
   data: Prisma.OrderUpdateInput;
   eventPayload: Record<string, unknown>;
+  eventType?: string;
+}
+
+type CallPayload = {
+  outcome: string;
+  proof: string;
+  startedAt?: Date;
+  durationSec?: number;
+  phoneNumberId?: string;
+  recordingUrl?: string;
+  callbackAt?: Date;
+  note?: string;
+  agentId?: string;
+};
+
+async function recordCall(
+  db: DbClient,
+  order: Order,
+  call: CallPayload,
+  agentId: string,
+  attemptNo: number,
+  ops: OpsContext,
+): Promise<{ id: string; startedAt: Date }> {
+  const startedAt = call.startedAt ?? new Date();
+  const phoneNumberId = call.phoneNumberId ?? (await pickOutboundNumber(db, ops.teamOrgId, order.id));
+  const created = await db.callAttempt.create({
+    data: {
+      orderId: order.id,
+      agentId,
+      phoneNumberId,
+      attemptNo,
+      round: order.recycleRound,
+      day: attemptDayOf(attemptNo),
+      slot: slotFor(startedAt, ops.timezone),
+      startedAt,
+      durationSec: call.durationSec,
+      outcome: call.outcome as never,
+      proof: call.proof as never,
+      recordingUrl: call.recordingUrl,
+      note: call.note,
+    },
+  });
+  return { id: created.id, startedAt };
 }
 
 /** Rule-specific writes. Keeps every status-specific field change in one place. */
@@ -235,14 +402,15 @@ async function applyRule(
   order: Order,
   to: OrderStatus,
   payload: Record<string, unknown>,
-  settings: OrgSettings,
-  tz: string,
+  ops: OpsContext,
 ): Promise<ApplyResult> {
+  const { settings, timezone: tz } = ops;
   const now = new Date();
   const actorId = ctx.kind === "user" ? ctx.userId : null;
   let flags = [...order.flags];
   const data: Prisma.OrderUpdateInput = {};
   const eventPayload: Record<string, unknown> = { ...payload };
+  let eventType: string | undefined;
 
   switch (rule.id) {
     case "ASSIGN": {
@@ -259,48 +427,67 @@ async function applyRule(
       break;
     }
     case "LOG_CALL": {
-      const p = payload as {
-        call: { outcome: string; proof: string; startedAt?: Date; durationSec?: number; phoneNumberId?: string; recordingUrl?: string; callbackAt?: Date; note?: string; agentId?: string };
-      };
-      const startedAt = p.call.startedAt ?? now;
+      const p = payload as { call: CallPayload };
       const attemptNo = order.attemptCount + 1;
       const agentId = p.call.agentId ?? actorId ?? order.assignedToId;
       if (!agentId) throw new TransitionError("INVALID_PAYLOAD", "call.agentId is required when the system logs a call");
-      const call = await db.callAttempt.create({
-        data: {
-          orderId: order.id,
-          agentId,
-          phoneNumberId: p.call.phoneNumberId,
-          attemptNo,
-          day: attemptDayOf(attemptNo),
-          slot: slotFor(startedAt, tz),
-          startedAt,
-          durationSec: p.call.durationSec,
-          outcome: p.call.outcome as never,
-          proof: p.call.proof as never,
-          recordingUrl: p.call.recordingUrl,
-          note: p.call.note,
-        },
-      });
+      const call = await recordCall(db, order, p.call, agentId, attemptNo, ops);
       data.attemptCount = attemptNo;
       data.attemptDay = attemptDayOf(attemptNo);
+      data.lastAttemptAt = call.startedAt;
       if (p.call.proof === "NONE") flags = addFlag(flags, "MANUAL_PROOF");
-      if (p.call.outcome === "CALLBACK_REQUESTED" && p.call.callbackAt) data.nextActionAt = p.call.callbackAt;
-      else if (p.call.outcome !== "ANSWERED") data.nextActionAt = addHours(startedAt, 2);
-      else data.nextActionAt = null;
+      if (p.call.outcome === "CALLBACK_REQUESTED" && p.call.callbackAt) {
+        data.nextActionAt = p.call.callbackAt;
+        flags = addFlag(flags, "CALLBACK");
+      } else if (p.call.outcome !== "ANSWERED" && attemptNo < settings.calls.maxAttemptsPerRound) {
+        const previous = [...(await roundAttemptDates(db, order))];
+        data.nextActionAt = planAttempt({ attemptNo: attemptNo + 1, previous, orderCreatedAt: order.createdAt, cfg: settings.calls, tz });
+        flags = removeFlag(flags, "CALLBACK");
+      } else {
+        data.nextActionAt = p.call.outcome === "ANSWERED" ? null : now;
+        flags = removeFlag(flags, "CALLBACK");
+      }
+      if (p.call.outcome === "WRONG_NUMBER") flags = addFlag(flags, "WRONG_NUMBER_REPORTED");
       eventPayload.callAttemptId = call.id;
       eventPayload.attemptNo = attemptNo;
+      eventPayload.round = order.recycleRound;
+      eventPayload.outcome = p.call.outcome;
       break;
     }
     case "CONFIRM":
     case "STOCK_BACK": {
-      const p = payload as { note?: string };
+      const p = payload as { note?: string; upsells?: Array<{ kind: "UPSELL" | "CROSS_SELL"; items: Array<{ productId: string; variantId?: string | null; qty: number; unitPrice?: number }> }> };
       if (rule.id === "CONFIRM" && actorId) data.confirmedBy = { connect: { id: actorId } };
       data.confirmedAt = order.confirmedAt ?? now;
       data.nextActionAt = null;
       data.postponedUntil = null;
       if (p.note) data.note = p.note;
       flags = removeFlag(flags, "WAITING_STOCK");
+      if (p.upsells && p.upsells.length > 0) {
+        let upsellValue = order.upsellValue;
+        let crossSellValue = order.crossSellValue;
+        let added = 0;
+        for (const u of p.upsells) {
+          const products = await db.product.findMany({ where: { merchantId: order.merchantId, id: { in: u.items.map((i) => i.productId) } }, select: { id: true, price: true } });
+          const priceOf = new Map(products.map((x) => [x.id, x.price]));
+          for (const it of u.items) {
+            const base = priceOf.get(it.productId);
+            if (base === undefined) throw new TransitionError("INVALID_PAYLOAD", `Upsell product ${it.productId} not found for this merchant`);
+            const unitPrice = it.unitPrice ?? base;
+            await db.orderItem.create({ data: { orderId: order.id, productId: it.productId, variantId: it.variantId ?? null, qty: it.qty, unitPrice } });
+            const value = unitPrice * it.qty;
+            added += value;
+            if (u.kind === "UPSELL") upsellValue += value;
+            else crossSellValue += value;
+          }
+          flags = addFlag(flags, u.kind === "UPSELL" ? "UPSELL" : "CROSS_SELL");
+        }
+        data.upsellValue = upsellValue;
+        data.crossSellValue = crossSellValue;
+        data.subtotal = order.subtotal + added;
+        data.total = order.total + added;
+        eventPayload.upsellAdded = added;
+      }
       const followUp = await followUpUserFor(db, order);
       if (followUp) {
         data.assignedTo = { connect: { id: followUp } };
@@ -321,7 +508,7 @@ async function applyRule(
       data.confirmedAt = now;
       data.nextActionAt = null;
       flags = addFlag(flags, "BOT_CONFIRMED");
-      const risky = flags.includes("HIGH_VALUE") || settings.riskyWilayas.includes(order.wilayaCode);
+      const risky = flags.includes("HIGH_VALUE") || settings.riskyWilayas.includes(order.wilayaCode) || flags.includes("REPEAT_REFUSER");
       if (risky) {
         flags = addFlag(flags, "NEEDS_VERIFICATION");
         const task = await db.task.create({
@@ -335,7 +522,8 @@ async function applyRule(
       }
       break;
     }
-    case "CANCEL": {
+    case "CANCEL":
+    case "SOURCE_CANCEL": {
       const p = payload as { cancelReason: string; reasonNote?: string };
       data.cancelReason = p.cancelReason as never;
       data.reasonNote = p.reasonNote ?? null;
@@ -372,8 +560,9 @@ async function applyRule(
       break;
     }
     case "FAKE_ORDER": {
-      const p = payload as { note?: string; blacklistRequest?: boolean };
+      const p = payload as { note?: string; blacklistRequest?: boolean; fakeReason: string };
       if (p.note) data.reasonNote = p.note;
+      data.fakeReason = p.fakeReason as never;
       flags = removeFlag(flags, "FAKE_PROPOSED");
       if (p.blacklistRequest) flags = addFlag(flags, "BLACKLIST_REQUESTED");
       data.nextActionAt = null;
@@ -382,8 +571,96 @@ async function applyRule(
     case "UNREACHABLE":
       data.nextActionAt = null;
       break;
-    case "READY_TO_SHIP":
+    case "CLAIM": {
+      const lockOwner = actorId ?? order.assignedToId;
+      if (!lockOwner) throw new TransitionError("INVALID_PAYLOAD", "A claim needs an agent");
+      data.lockedBy = { connect: { id: lockOwner } };
+      data.lockedAt = now;
+      data.lockPrevStatus = order.status;
+      eventType = "LOCK";
       break;
+    }
+    case "LOCK_RELEASE": {
+      const p = payload as { reason?: string };
+      eventType = p.reason === "TIMEOUT" ? "LOCK_TIMEOUT" : "UNLOCK";
+      break;
+    }
+    case "CONFIRM_POSTPONED": {
+      const p = payload as { deliverOn: Date; note?: string };
+      if (actorId) data.confirmedBy = { connect: { id: actorId } };
+      data.confirmedAt = order.confirmedAt ?? now;
+      data.postponedUntil = p.deliverOn;
+      data.nextActionAt = p.deliverOn;
+      if (p.note) data.note = p.note;
+      break;
+    }
+    case "RECONFIRM":
+    case "RECONFIRM_CANCEL": {
+      const p = payload as { call: CallPayload; cancelReason?: string; reasonNote?: string; note?: string };
+      const agentId = p.call.agentId ?? actorId ?? order.assignedToId;
+      if (!agentId) throw new TransitionError("INVALID_PAYLOAD", "call.agentId is required");
+      const total = await db.callAttempt.count({ where: { orderId: order.id } });
+      const call = await recordCall(db, order, p.call, agentId, total + 1, ops);
+      eventPayload.callAttemptId = call.id;
+      data.nextActionAt = null;
+      data.postponedUntil = null;
+      if (rule.id === "RECONFIRM") {
+        if (!order.confirmedById && actorId) data.confirmedBy = { connect: { id: actorId } };
+        if (p.note) data.note = p.note;
+        const followUp = await followUpUserFor(db, order);
+        if (followUp) {
+          data.assignedTo = { connect: { id: followUp } };
+          eventPayload.handedOffTo = followUp;
+        }
+      } else {
+        data.cancelReason = p.cancelReason as never;
+        data.reasonNote = p.reasonNote ?? null;
+      }
+      break;
+    }
+    case "EXPIRE":
+      data.expiredAt = now;
+      data.nextActionAt = null;
+      eventType = "EXPIRE";
+      break;
+    case "RECYCLE": {
+      const p = payload as { assignedToId: string; podId?: string | null };
+      data.assignedTo = { connect: { id: p.assignedToId } };
+      if (p.podId) data.pod = { connect: { id: p.podId } };
+      data.recycleRound = order.recycleRound + 1;
+      data.attemptCount = 0;
+      data.attemptDay = 0;
+      data.nextActionAt = now;
+      flags = addFlag(flags, "RECYCLED");
+      eventPayload.fromUserId = order.assignedToId;
+      eventType = "RECYCLE";
+      break;
+    }
+    case "READY_TO_SHIP":
+    case "PACKED":
+    case "DELAYED_RESUMED":
+      break;
+    case "PARCEL_CREATED": {
+      const p = payload as { trackingNumber?: string; courierId?: string; labelUrl?: string };
+      if (p.trackingNumber) data.trackingNumber = p.trackingNumber;
+      if (p.courierId) data.courier = { connect: { id: p.courierId } };
+      if (p.labelUrl) data.labelUrl = p.labelUrl;
+      data.lastSendFailure = null;
+      break;
+    }
+    case "SHIPPING_DELAYED": {
+      const p = payload as { reason: string; releaseStock: boolean };
+      flags = addFlag(flags, "SHIPPING_DELAYED");
+      if (p.releaseStock) flags = addFlag(flags, "STOCK_RELEASED");
+      eventPayload.reason = p.reason;
+      break;
+    }
+    case "DELAYED_CANCELLED": {
+      const p = payload as { cancelReason: string; reasonNote?: string };
+      data.cancelReason = p.cancelReason as never;
+      data.reasonNote = p.reasonNote ?? null;
+      break;
+    }
     case "SHIPPED": {
       const p = payload as { trackingNumber: string; courierId?: string; labelUrl?: string };
       data.trackingNumber = p.trackingNumber;
@@ -444,7 +721,7 @@ async function applyRule(
   }
 
   if (flags.join("|") !== order.flags.join("|")) data.flags = flags;
-  return { data, eventPayload };
+  return { data, eventPayload, eventType };
 }
 
 function sanitizeForJson(value: unknown): Prisma.InputJsonValue {
@@ -478,32 +755,37 @@ export async function transitionOrder(
       throw new TransitionError("INVALID_PAYLOAD", "Missing or invalid fields for this transition", parsed.error.issues);
     }
     const payload = parsed.data as Record<string, unknown>;
-    const { settings, timezone } = await loadMerchantSettings(tx, order.merchantId);
-    await checkRequirements(tx, rule, order, input.to, payload, settings);
-    const { data, eventPayload } = await applyRule(tx, rule, ctx, order, input.to, payload, settings, timezone);
+    const ops = await loadOpsContext(tx, order);
+    // Ownership lock (section 19b.2): with distribution on, agents act only on their own orders.
+    if (ops.settings.assignment.ownershipLock && ctx.kind === "user" && AGENT_ROLES.includes(ctx.role) && !isSupervisorPlus(ctx) && order.assignedToId && order.assignedToId !== ctx.userId) {
+      throw new TransitionError("NOT_ORDER_OWNER", "This order is assigned to another agent");
+    }
+    await checkRequirements(tx, rule, ctx, order, input.to, payload, ops);
+    const { data, eventPayload, eventType } = await applyRule(tx, rule, ctx, order, input.to, payload, ops);
+    // Any action other than the claim itself releases the claim/lock.
+    const lockReset: Prisma.OrderUpdateInput = rule.id === "CLAIM" || (!order.lockedById && !order.lockPrevStatus) ? {} : { lockedBy: { disconnect: true }, lockedAt: null, lockPrevStatus: null };
 
     const updated = await tx.order.update({
       where: { id: order.id, merchantId: order.merchantId },
-      data: { ...data, status: input.to, statusGroup: statusGroupOf(input.to), lastActivityAt: new Date() },
+      data: { ...lockReset, ...data, status: input.to, statusGroup: statusGroupOf(input.to), lastActivityAt: new Date() },
     });
     const event = await tx.orderEvent.create({
       data: {
         orderId: order.id,
         actorId: ctx.kind === "user" ? ctx.userId : null,
-        type: "STATUS_CHANGE",
+        type: eventType ?? "STATUS_CHANGE",
         fromStatus: order.status,
         toStatus: input.to,
         payload: sanitizeForJson({ ruleId: rule.id, actor: role, ...eventPayload }),
       },
     });
-    return { order: updated, event, ruleId: rule.id, sideEffects: rule.sideEffects, payload };
+    return { order: updated, event, ruleId: rule.id, sideEffects: rule.sideEffects, payload: { ...payload, ...eventPayload } };
   });
   const result = ctx.kind === "system" ? await withSystemContext(ctx.reason, run) : await run();
 
-  await dispatchSideEffects({ ctx, order: result.order, event: result.event, sideEffects: result.sideEffects as readonly SideEffect[], payload: result.payload });
+  await dispatchSideEffects({ ctx, order: result.order, event: result.event, sideEffects: result.sideEffects as readonly SideEffect[], payload: sanitizeForJson(result.payload) as Record<string, unknown> });
   return { order: result.order, event: result.event, ruleId: result.ruleId };
 }
-
 /**
  * Supervisor override outside the transition table. Requires a reason, writes an OVERRIDE event,
  * flags the order and records an org-level audit entry.
@@ -530,6 +812,9 @@ export async function overrideOrderStatus(
         statusGroup: statusGroupOf(input.to),
         flags: addFlag(order.flags, "OVERRIDDEN"),
         lastActivityAt: new Date(),
+        lockedById: null,
+        lockedAt: null,
+        lockPrevStatus: null,
         ...(input.to === "LIVRE" ? { deliveredAt: order.deliveredAt ?? new Date() } : {}),
         ...(input.to === "EXPEDIE" ? { shippedAt: order.shippedAt ?? new Date() } : {}),
       },
@@ -640,19 +925,62 @@ export async function addOrderNote(ctx: TenantContext, input: { orderId: string;
 }
 
 /** Agent proposes FAUSSE_COMMANDE; the supervisor finalizes through the FAKE_ORDER transition. */
-export async function proposeFakeOrder(ctx: TenantContext, input: { orderId: string; note: string }): Promise<OrderEvent> {
+export async function proposeFakeOrder(ctx: TenantContext, input: { orderId: string; note: string; fakeReason?: string }): Promise<OrderEvent> {
   if (isReadOnly(ctx)) throw new ForbiddenError("Read-only role");
   return prisma.$transaction(async (tx) => {
     const order = await loadOrder(tx, ctx, input.orderId);
     const calls = await tx.callAttempt.count({ where: { orderId: order.id } });
-    if (calls === 0) throw new TransitionError("PRECONDITION_FAILED", "Log a call before proposing a fake order");
+    if (calls === 0 && input.fakeReason !== "INVALID_PHONE") throw new TransitionError("PRECONDITION_FAILED", "Log a call before proposing a fake order");
     await tx.order.update({
       where: { id: order.id, merchantId: order.merchantId },
-      data: { flags: addFlag(order.flags, "FAKE_PROPOSED"), lastActivityAt: new Date() },
+      data: {
+        flags: addFlag(order.flags, "FAKE_PROPOSED"),
+        ...(input.fakeReason ? { fakeReason: input.fakeReason as never } : {}),
+        lastActivityAt: new Date(),
+        lockedById: null,
+        lockedAt: null,
+      },
     });
     await tx.task.create({ data: { orderId: order.id, type: "VERIFY_ORDER", dueAt: addHours(new Date(), 24) } });
-    return tx.orderEvent.create({ data: { orderId: order.id, actorId: ctx.userId, type: "NOTE", payload: { note: input.note, proposal: "FAUSSE_COMMANDE" } } });
+    return tx.orderEvent.create({
+      data: { orderId: order.id, actorId: ctx.userId, type: "NOTE", payload: { note: input.note, proposal: "FAUSSE_COMMANDE", fakeReason: input.fakeReason ?? null } },
+    });
   });
+}
+
+// ─────────────────────────────── claim / lock ───────────────────────────────
+
+/** The agent opens an order from the queue: EN_COURS_CONFIRMATION, locked to them (section 19c.2). */
+export async function claimOrder(ctx: TenantContext, orderId: string): Promise<TransitionResult> {
+  return transitionOrder(ctx, { orderId, to: "EN_COURS_CONFIRMATION", payload: {} });
+}
+
+/** Release a claim back to the status it came from (agent skipped, or timeout via the scheduler). */
+export async function releaseLock(ctx: ActorContext, orderId: string, reason: "TIMEOUT" | "SKIPPED" | "RELEASED" = "RELEASED"): Promise<TransitionResult | null> {
+  const order = await (ctx.kind === "system"
+    ? withSystemContext(ctx.reason, () => prisma.order.findFirst({ where: { id: orderId } }))
+    : prisma.order.findFirst({ where: { AND: [{ id: orderId }, orderAccessWhere(ctx)] } }));
+  if (!order || order.status !== "EN_COURS_CONFIRMATION") return null;
+  return transitionOrder(ctx, { orderId, to: order.lockPrevStatus ?? "ASSIGNEE", payload: { reason } });
+}
+
+// ─────────────────────────────── comments ───────────────────────────────
+
+export const COMMENT_TAGS = ["NRP", "SMS_ENVOYE", "COULEUR_TAILLE", "LIVREUR", "SUIVI", "ADRESSE", "PRIX", "RAPPEL"] as const;
+export type CommentTag = (typeof COMMENT_TAGS)[number];
+
+/**
+ * Structured comment (section 19c.6). Allowed at every stage, including for CLIENT_VIEWER in
+ * managed mode (the merchant can comment, never change a status).
+ */
+export async function addComment(ctx: TenantContext, input: { orderId: string; body: string; tags?: string[] }) {
+  const body = input.body.trim();
+  const tags = [...new Set((input.tags ?? []).filter((t): t is CommentTag => (COMMENT_TAGS as readonly string[]).includes(t)))];
+  if (!body && tags.length === 0) throw new TransitionError("INVALID_PAYLOAD", "Comment cannot be empty");
+  if (ctx.role === "READ_ONLY" || ctx.role === "MARKETER") throw new ForbiddenError("Read-only role");
+  const order = await prisma.order.findFirst({ where: { AND: [{ id: input.orderId }, orderAccessWhere(ctx)] }, select: { id: true, merchantId: true, statusGroup: true } });
+  if (!order) throw new TransitionError("ORDER_NOT_FOUND", "Order not found");
+  return prisma.comment.create({ data: { orderId: order.id, authorId: ctx.userId, stage: order.statusGroup, tags, body: body || tags.join(" + ") } });
 }
 
 // ─────────────────────────────── creation ───────────────────────────────
@@ -662,16 +990,24 @@ export interface CreateOrderInput {
   storeId: string;
   externalId?: string | null;
   customer: { name?: string | null; phone: string; phone2?: string | null };
-  wilaya: number | string;
+  wilaya: number | string | null;
   commune?: string | null;
   address?: string | null;
+  address2?: string | null;
   landmark?: string | null;
   deliveryType?: "HOME" | "STOP_DESK";
   items: Array<{ productId: string; variantId?: string | null; qty: number; unitPrice?: number }>;
+  /** lines whose SKU is not in the catalog (section 19c.4) */
+  unmatched?: Array<{ externalSku: string; productName: string; variantName?: string | null; qty: number; unitPrice?: number | null }>;
   shippingFee?: number;
+  /** total from the source platform (Shopify etc.); defaults to items + shipping */
+  totalOverride?: number | null;
+  freeDelivery?: boolean;
+  abandonedCartRecovery?: boolean;
   source?: string | null;
   note?: string | null;
   flags?: string[];
+  clientIp?: string | null;
   /** seed/backfill only */
   createdAt?: Date;
   /** skip duplicate detection (seed/backfill) */
@@ -686,31 +1022,49 @@ export class OrderValidationError extends Error {
   }
 }
 
+/** Intake refused (blacklisted phone in REFUSE mode, non-Algerian number…). */
+export class IntakeRefusedError extends Error {
+  readonly code = "INTAKE_REFUSED";
+  constructor(public readonly reason: "BLACKLISTED" | "NON_ALGERIAN_PHONE", message: string) {
+    super(message);
+    this.name = "IntakeRefusedError";
+  }
+}
+
+async function loadCommuneRefs(db: DbClient, commune: string | null | undefined, wilayaCode: number | null): Promise<CommuneRef[]> {
+  const or: Prisma.CommuneWhereInput[] = [];
+  if (commune?.trim()) {
+    or.push({ nameFr: { equals: commune.trim(), mode: "insensitive" } }, { nameAr: commune.trim() });
+  }
+  if (wilayaCode) or.push({ wilayaCode });
+  if (or.length === 0) return [];
+  return db.commune.findMany({ where: { OR: or }, select: { wilayaCode: true, nameFr: true, nameAr: true }, take: 2000 });
+}
+
+/** Phone blacklisted for this merchant (customer flag) or by an agency serving it (Blacklist table). */
+async function isBlacklisted(db: DbClient, merchantId: string, phone: string): Promise<boolean> {
+  const contracts = await db.serviceContract.findMany({ where: { merchantId, status: { in: ["TRIAL", "ACTIVE"] } }, select: { agencyId: true } });
+  const orgIds = [merchantId, ...contracts.map((c) => c.agencyId)];
+  const hit = await db.blacklist.findFirst({ where: { orgId: { in: orgIds }, phone }, select: { id: true } });
+  return !!hit;
+}
+
 /**
- * Create an order in NOUVEAU (section 7.3 first row): phone normalization, wilaya mapping,
- * customer upsert, sequence number, duplicate detection, HIGH_VALUE flag, audit event.
- * Ingestion adapters (Shopify, DZBuild, API, manual form) all end here.
+ * Create an order (section 7.3 first row + section 19c.4 intake): phone normalization, address
+ * validation with auto-repair, fake signals, blacklist, unmatched SKUs, customer upsert, repeat
+ * badge, sequence number, duplicate detection, HIGH_VALUE flag, audit event. Every ingestion
+ * adapter (Shopify, DZBuild, API, Sheets, manual form, import) ends here.
  */
 export async function createOrder(ctx: ActorContext, input: CreateOrderInput): Promise<Order> {
   if (ctx.kind === "user") {
     if (isReadOnly(ctx)) throw new ForbiddenError("Read-only role");
     if (!ctx.accessibleMerchantIds.includes(input.merchantId)) throw new ForbiddenError("No access to this merchant");
   }
-  if (input.items.length === 0) throw new OrderValidationError("An order needs at least one item");
+  const unmatched = input.unmatched ?? [];
+  if (input.items.length === 0 && unmatched.length === 0) throw new OrderValidationError("An order needs at least one item");
 
   const phone = normalizePhone(input.customer.phone);
   const phone2 = input.customer.phone2 ? normalizePhone(input.customer.phone2) : null;
-  const wilayaCode = resolveWilayaCode(input.wilaya);
-  const flags = new Set(input.flags ?? []);
-  const problems: string[] = [];
-  if (!phone.valid) {
-    flags.add("INVALID_PHONE");
-    problems.push("invalid phone");
-  }
-  if (!wilayaCode) {
-    flags.add("UNKNOWN_WILAYA");
-    problems.push(`unknown wilaya "${String(input.wilaya)}"`);
-  }
   const customerPhone = phone.phone ?? input.customer.phone.replace(/\D/g, "").slice(0, 20);
   if (!customerPhone) throw new OrderValidationError("A phone number is required");
 
@@ -718,6 +1072,40 @@ export async function createOrder(ctx: ActorContext, input: CreateOrderInput): P
     const store = await tx.store.findFirst({ where: { id: input.storeId, merchantId: input.merchantId }, select: { id: true } });
     if (!store) throw new OrderValidationError("Store not found for this merchant");
 
+    const merchantOrg = await tx.organization.findUnique({ where: { id: input.merchantId }, select: { settings: true } });
+    const settings = parseOrgSettings(merchantOrg?.settings);
+    const flags = new Set(input.flags ?? []);
+    const mappingErrors = new Set<MappingError>();
+    const problems: string[] = [];
+
+    // ── phone ──
+    if (!phone.valid) {
+      flags.add("INVALID_PHONE");
+      mappingErrors.add("INVALID_PHONE");
+      problems.push("invalid phone");
+    }
+
+    // ── blacklist ──
+    const banned = phone.phone ? await isBlacklisted(tx, input.merchantId, phone.phone) : false;
+    if (banned && settings.intake.blacklistMode === "REFUSE") throw new IntakeRefusedError("BLACKLISTED", "This phone number is blacklisted");
+
+    // ── address (wilaya / commune / address) with auto-repair ──
+    const firstGuess = typeof input.wilaya === "number" ? input.wilaya : null;
+    const communes = await loadCommuneRefs(tx, input.commune, firstGuess);
+    const addr = validateAddress(
+      { wilaya: input.wilaya, commune: input.commune, address: input.address, address2: input.address2, landmark: input.landmark, deliveryType: input.deliveryType },
+      communes,
+    );
+    for (const e of addr.errors) mappingErrors.add(e);
+    if (addr.repaired) flags.add("ADDRESS_REPAIRED");
+    if (!addr.wilayaCode) flags.add("UNKNOWN_WILAYA");
+    if (addr.errors.length > 0) problems.push(...addr.notes, ...addr.errors.filter((e) => e === "ADDRESS_EMPTY").map(() => "empty address"));
+
+    // ── fake signals ──
+    const fakeSignals = detectFakeSignals({ name: input.customer.name, phone: input.customer.phone, note: input.note });
+    if (fakeSignals.length > 0) flags.add("FAKE_SUSPECT");
+
+    // ── items, unmatched lines and totals ──
     const products = await tx.product.findMany({
       where: { merchantId: input.merchantId, id: { in: input.items.map((i) => i.productId) } },
       select: { id: true, price: true },
@@ -728,37 +1116,37 @@ export async function createOrder(ctx: ActorContext, input: CreateOrderInput): P
       if (base === undefined) throw new OrderValidationError(`Product ${i.productId} not found for this merchant`);
       return { productId: i.productId, variantId: i.variantId ?? null, qty: i.qty, unitPrice: i.unitPrice ?? base };
     });
-    const subtotal = items.reduce((acc, i) => acc + i.qty * i.unitPrice, 0);
-    const shippingFee = input.shippingFee ?? 0;
-    const total = subtotal + shippingFee;
+    if (unmatched.length > 0) {
+      mappingErrors.add("UNMATCHED_SKU");
+      flags.add("UNMATCHED");
+      problems.push(`${unmatched.length} unmatched SKU line(s)`);
+    }
+    const subtotal = items.reduce((acc, i) => acc + i.qty * i.unitPrice, 0) + unmatched.reduce((acc, u) => acc + u.qty * (u.unitPrice ?? 0), 0);
+    const shippingFee = input.freeDelivery ? 0 : input.shippingFee ?? 0;
+    const total = input.totalOverride ?? subtotal + shippingFee;
 
-    const org = await tx.organization.update({
-      where: { id: input.merchantId },
-      data: { orderSeq: { increment: 1 } },
-      select: { orderSeq: true, settings: true },
-    });
-    const settings = parseOrgSettings(org.settings);
+    const org = await tx.organization.update({ where: { id: input.merchantId }, data: { orderSeq: { increment: 1 } }, select: { orderSeq: true } });
     if (total >= settings.highValueThreshold) flags.add("HIGH_VALUE");
 
     const customer = await tx.customer.upsert({
       where: { merchantId_phone: { merchantId: input.merchantId, phone: customerPhone } },
-      create: {
-        merchantId: input.merchantId,
-        phone: customerPhone,
-        phone2: phone2?.phone ?? null,
-        name: input.customer.name ?? null,
-        ordersCount: 1,
-      },
+      create: { merchantId: input.merchantId, phone: customerPhone, phone2: phone2?.phone ?? null, name: input.customer.name ?? null, ordersCount: 1, blacklisted: banned },
       update: {
         ordersCount: { increment: 1 },
         ...(input.customer.name ? { name: input.customer.name } : {}),
         ...(phone2?.phone ? { phone2: phone2.phone } : {}),
+        ...(banned ? { blacklisted: true } : {}),
       },
     });
-    if (customer.blacklisted) flags.add("BLACKLISTED_CUSTOMER");
-    if (customer.refusedCount >= 2) flags.add("REPEAT_REFUSER");
+    if (customer.blacklisted || banned) flags.add("BLACKLISTED_CUSTOMER");
+    if (customer.refusedCount >= 2) {
+      flags.add("REPEAT_REFUSER");
+      if (!fakeSignals.includes("REPEAT_REFUSER")) fakeSignals.push("REPEAT_REFUSER");
+    }
+    const isRepeatCustomer = customer.ordersCount > 1;
 
-    const initialStatus: OrderStatus = problems.length > 0 ? "A_VERIFIER" : "NOUVEAU";
+    const blocking = [...mappingErrors].filter((e) => e !== "UNMATCHED_SKU" || items.length === 0);
+    const initialStatus: OrderStatus = blocking.length > 0 || mappingErrors.has("UNMATCHED_SKU") ? "A_VERIFIER" : "NOUVEAU";
 
     const order = await tx.order.create({
       data: {
@@ -772,9 +1160,10 @@ export async function createOrder(ctx: ActorContext, input: CreateOrderInput): P
         customerPhone2: phone2?.phone ?? null,
         status: initialStatus,
         statusGroup: "CONFIRMATION",
-        wilayaCode: wilayaCode ?? 16,
-        commune: input.commune ?? null,
+        wilayaCode: addr.wilayaCode ?? 16,
+        commune: addr.commune,
         address: input.address ?? null,
+        address2: input.address2 ?? null,
         landmark: input.landmark ?? null,
         deliveryType: input.deliveryType ?? "HOME",
         subtotal,
@@ -782,11 +1171,20 @@ export async function createOrder(ctx: ActorContext, input: CreateOrderInput): P
         total,
         source: input.source ?? null,
         note: input.note ?? null,
-        reasonNote: problems.length > 0 ? `Intake check failed: ${problems.join(", ")}` : null,
+        reasonNote: problems.length > 0 ? `Intake check: ${problems.join("; ")}` : null,
         flags: [...flags],
+        mappingErrors: [...mappingErrors],
+        fakeReason: fakeSignals[0] ?? null,
+        isRepeatCustomer,
+        freeDelivery: input.freeDelivery ?? false,
+        abandonedCartRecovery: input.abandonedCartRecovery ?? false,
+        clientIp: input.clientIp ?? null,
         createdAt: input.createdAt,
         lastActivityAt: input.createdAt ?? new Date(),
         items: { create: items },
+        unmatchedLines: unmatched.length
+          ? { create: unmatched.map((u) => ({ externalSku: u.externalSku, productName: u.productName, variantName: u.variantName ?? null, qty: u.qty, unitPrice: u.unitPrice ?? 0 })) }
+          : undefined,
       },
     });
     await tx.orderEvent.create({
@@ -796,25 +1194,25 @@ export async function createOrder(ctx: ActorContext, input: CreateOrderInput): P
         type: "STATUS_CHANGE",
         fromStatus: null,
         toStatus: initialStatus,
-        payload: { ruleId: "CREATE", source: input.source ?? null, externalId: input.externalId ?? null, problems },
+        payload: sanitizeForJson({ ruleId: "CREATE", source: input.source ?? null, externalId: input.externalId ?? null, problems, mappingErrors: [...mappingErrors], fakeSignals }),
         createdAt: input.createdAt,
       },
     });
-    if (problems.length > 0) {
+    if (initialStatus === "A_VERIFIER") {
       await tx.task.create({ data: { orderId: order.id, type: "VERIFY_ORDER", dueAt: addHours(new Date(), 24) } });
     }
 
-    // Duplicate detection: same customer + same product within 48 h, previous order still alive.
+    // Duplicate detection: same customer + same product within the window, previous order still alive.
     let duplicateOfId: string | null = null;
-    if (!input.skipDuplicateCheck && initialStatus === "NOUVEAU") {
-      const since = addDays(order.createdAt, -2);
+    if (!input.skipDuplicateCheck && initialStatus === "NOUVEAU" && items.length > 0) {
+      const since = addHours(order.createdAt, -settings.intake.duplicateWindowHours);
       const previous = await tx.order.findFirst({
         where: {
           merchantId: input.merchantId,
           customerId: customer.id,
           id: { not: order.id },
           createdAt: { gte: since },
-          status: { notIn: ["ANNULEE", "DOUBLE", "FAUSSE_COMMANDE", "INJOIGNABLE"] },
+          status: { notIn: ["ANNULEE", "DOUBLE", "FAUSSE_COMMANDE", "INJOIGNABLE", "EXPIREE"] },
           items: { some: { productId: { in: items.map((i) => i.productId) } } },
         },
         orderBy: { createdAt: "desc" },
@@ -841,7 +1239,7 @@ export async function createOrder(ctx: ActorContext, input: CreateOrderInput): P
     from: null,
     to: created.order.status,
     actorId: ctx.kind === "user" ? ctx.userId : null,
-    sideEffects: [],
+    sideEffects: created.order.status === "NOUVEAU" ? ["AUTO_ASSIGN"] : [],
     payload: { ruleId: "CREATE" },
   });
   return created.order;

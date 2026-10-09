@@ -7,6 +7,8 @@ import { WILAYAS } from "@/lib/wilayas";
 import { resolveTenantContext, systemContext, type TenantContext } from "@/lib/tenant";
 import { assignOrder, createOrder, proposeFakeOrder, transitionOrder } from "@/lib/orders/orderTransitions";
 import { addDays, addHours } from "@/lib/time";
+import { planAttempt } from "@/lib/calls/slots";
+import { DEFAULT_ORG_SETTINGS } from "@/lib/settings";
 import { COMMUNES, FIRST_NAMES, LANDMARKS, LAST_NAMES, PRODUCTS, STATUS_DISTRIBUTION, WILAYA_WEIGHTS, type ProductSeed } from "./seed-data";
 
 /**
@@ -239,8 +241,15 @@ async function main() {
   const RETURN_REASONS: ReturnReason[] = ["PRICE_SHOCK", "NOT_AS_EXPECTED", "CLIENT_UNREACHABLE", "WRONG_ADDRESS", "DELIVERY_DELAY", "CLIENT_ABSENT"];
   const checklist = { productExplained: true, totalStated: true, addressVerified: true, variantVerified: true, explicitYes: true } as const;
 
-  async function logCall(agent: TenantContext, orderId: string, outcome: "ANSWERED" | "NO_ANSWER" | "BUSY" | "OFF" | "WRONG_NUMBER", startedAt: Date, attemptCount: number) {
+  // Call times follow the 3×3 cadence (slots, blocked windows, spacing) like real attempts would.
+  const callTimes = new Map<string, Date[]>();
+  const orderCreated = new Map<string, Date>();
+  async function logCall(agent: TenantContext, orderId: string, outcome: "ANSWERED" | "NO_ANSWER" | "BUSY" | "OFF" | "WRONG_NUMBER", _hint: Date, attemptCount: number) {
     const to = `APPEL_${(attemptCount % 3) + 1}` as OrderStatus;
+    const previous = callTimes.get(orderId) ?? [];
+    const startedAt = planAttempt({ attemptNo: attemptCount + 1, previous, orderCreatedAt: orderCreated.get(orderId) ?? addDays(new Date(), -3), cfg: DEFAULT_ORG_SETTINGS.calls, tz: "Africa/Algiers" });
+    if (startedAt.getTime() > Date.now()) throw new Error(`seed: planned attempt in the future for ${orderId}`);
+    callTimes.set(orderId, [...previous, startedAt]);
     const number = numbers[attemptCount % numbers.length];
     return transitionOrder(agent, {
       orderId,
@@ -297,7 +306,14 @@ async function main() {
     const repeat = customerPool.filter((c) => c.merchantId === m.merchantId);
     const cust = repeat.length > 3 && rand() < 0.15 ? pick(repeat) : { merchantId: m.merchantId, phone: randomPhone(), name };
     customerPool.push(cust);
-    const ageDays = target === "NOUVEAU" || target === "ASSIGNEE" ? rand() * 0.5 : target.startsWith("APPEL") ? rand() * 2 : rand() * 30 + 1;
+    const ageDays =
+      target === "NOUVEAU" || target === "ASSIGNEE"
+        ? rand() * 0.5
+        : target.startsWith("APPEL")
+          ? 1.3 + rand() * 0.7
+          : target === "INJOIGNABLE" || target === "EXPIREE"
+            ? 6 + rand() * 20
+            : rand() * 28 + 2;
     const createdAt = new Date(now.getTime() - ageDays * 86_400_000);
     const communes = COMMUNES[wilayaCode];
 
@@ -318,6 +334,7 @@ async function main() {
       skipDuplicateCheck: true,
     });
     created++;
+    orderCreated.set(order.id, createdAt);
 
     if (target === "NOUVEAU") continue;
 
@@ -328,6 +345,8 @@ async function main() {
         storeId: order.storeId,
         customer: { name: cust.name, phone: cust.phone },
         wilaya: wilayaCode,
+        commune: order.commune,
+        address: order.address,
         items: [{ productId: product.id, variantId: variant?.id ?? null, qty }],
         shippingFee: m.shippingFee,
         source: "facebook_ads",
@@ -361,6 +380,14 @@ async function main() {
       case "CONFIRMEE":
         await driveToConfirmed(m, agent, order.id, createdAt);
         break;
+      case "CONFIRMEE_REPORTEE":
+        await logCall(agent, order.id, "ANSWERED", createdAt, 0);
+        await transitionOrder(agent, { orderId: order.id, to: "CONFIRMEE_REPORTEE", payload: { checklist, deliverOn: addDays(now, randInt(1, 5)), note: "Client en déplacement, livrer après son retour" } });
+        break;
+      case "EXPIREE":
+        for (let i = 0; i < 4; i++) await logCall(agent, order.id, pick(["NO_ANSWER", "BUSY", "OFF"]), createdAt, i);
+        await transitionOrder(SYSTEM, { orderId: order.id, to: "EXPIREE", payload: { job: "seed" } });
+        break;
       case "CONFIRMEE_BOT":
         await driveToConfirmed(m, agent, order.id, createdAt, true);
         break;
@@ -392,9 +419,15 @@ async function main() {
         break;
       }
       case "FAUSSE_COMMANDE":
-        await logCall(agent, order.id, "WRONG_NUMBER", addHours(createdAt, 1), 0);
-        await proposeFakeOrder(agent, { orderId: order.id, note: "Numéro inexistant, nom fantaisiste" });
-        await transitionOrder(m.supervisor, { orderId: order.id, to: "FAUSSE_COMMANDE", payload: { note: "Vérifié: faux numéro", blacklistRequest: rand() < 0.5 } });
+        if (rand() < 0.5) {
+          await logCall(agent, order.id, "WRONG_NUMBER", createdAt, 0);
+          await proposeFakeOrder(agent, { orderId: order.id, note: "Numéro inexistant", fakeReason: "INVALID_PHONE" });
+          await transitionOrder(m.supervisor, { orderId: order.id, to: "FAUSSE_COMMANDE", payload: { fakeReason: "INVALID_PHONE", note: "Vérifié: faux numéro", blacklistRequest: rand() < 0.5 } });
+        } else {
+          for (let i = 0; i < 4; i++) await logCall(agent, order.id, i === 3 ? "ANSWERED" : "NO_ANSWER", createdAt, i);
+          await proposeFakeOrder(agent, { orderId: order.id, note: "Le client dit n'avoir rien commandé", fakeReason: "DID_NOT_ORDER" });
+          await transitionOrder(m.supervisor, { orderId: order.id, to: "FAUSSE_COMMANDE", payload: { fakeReason: "DID_NOT_ORDER", note: "Confirmé par rappel" } });
+        }
         break;
       case "INJOIGNABLE": {
         // 9 attempts over 3 days; day 2+ by the other agent of the pod (agent rotation)

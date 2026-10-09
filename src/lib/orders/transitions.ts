@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { OrderStatus, Role } from "@prisma/client";
-import { CONFIRMATION_OPEN_STATUSES, IN_TRANSIT_STATUSES } from "./statuses";
+import { CLAIMABLE_STATUSES, CONFIRMATION_OPEN_STATUSES, EXPIRABLE_STATUSES, IN_TRANSIT_STATUSES } from "./statuses";
 
 /**
  * Transition table (section 7.3) as data. The service in orderTransitions.ts is the only code
@@ -36,7 +36,11 @@ export type SideEffect =
   | "RESTOCK"
   | "RELEASE_STOCK"
   | "INVOICE_LINE"
-  | "OPEN_CLAIM";
+  | "OPEN_CLAIM"
+  | "MISSED_CALL_MESSAGE"
+  | "WRITE_BACK"
+  | "QUEUE_REFRESH"
+  | "AUTO_ASSIGN";
 
 export type Requirement =
   | { kind: "ANSWERED_CALL"; minDurationSec?: number }
@@ -47,7 +51,22 @@ export type Requirement =
   | { kind: "STOCK_ZERO" }
   | { kind: "NOT_FLAGGED"; flag: string }
   | { kind: "NOTE_IF_OTHER" }
-  | { kind: "POSTPONE_MAX_DAYS"; days: number };
+  | { kind: "POSTPONE_MAX_DAYS"; days: number }
+  /** cadence rules: slots, blocked windows, hard minimum spacing, attempt caps (section 8 / 19c.1) */
+  | { kind: "CALL_TIMING" }
+  /** N properly spaced attempts over ≥ M slots (section 19c.1); clear fake reasons are exempt */
+  | { kind: "SPACED_ATTEMPTS"; exemptClearFake?: boolean }
+  /** 9 attempts in the round, or the cross-round cap reached */
+  | { kind: "UNREACHABLE_READY" }
+  /** the actor holds the claim/lock (or the lock expired) */
+  | { kind: "LOCK_OWNER" }
+  /** the target status equals the status the order was claimed from */
+  | { kind: "LOCK_PREVIOUS_STATUS" }
+  /** recycle round still available and cool-down passed */
+  | { kind: "RECYCLE_AVAILABLE" }
+  /** the re-confirmation call in the payload is an answered call */
+  | { kind: "PAYLOAD_CALL_ANSWERED" }
+  | { kind: "CONFIRMED_POSTPONE_WINDOW" };
 
 export interface TransitionRule<S extends z.ZodTypeAny = z.ZodTypeAny> {
   id: string;
@@ -64,7 +83,7 @@ export interface TransitionRule<S extends z.ZodTypeAny = z.ZodTypeAny> {
 
 const CALL_OUTCOMES = ["ANSWERED", "NO_ANSWER", "BUSY", "OFF", "WRONG_NUMBER", "CALLBACK_REQUESTED"] as const;
 const CALL_PROOFS = ["VOIP_LOG", "DEVICE_LOG", "NONE"] as const;
-const CANCEL_REASONS = [
+export const CANCEL_REASONS = [
   "CHANGED_MIND",
   "PRICE_TOO_HIGH",
   "SHIPPING_FEE",
@@ -73,9 +92,14 @@ const CANCEL_REASONS = [
   "WRONG_PRODUCT_OR_SIZE",
   "DELIVERY_TOO_SLOW",
   "DID_NOT_ORDER",
+  "CANCELLED_BY_CUSTOMER",
+  "WRONG_INFORMATION",
+  "NO_LONGER_INTERESTED",
+  "CUSTOMER_ABSENT",
   "OTHER",
 ] as const;
-const RETURN_REASONS = [
+export const FAKE_REASONS = ["INVALID_PHONE", "NAME_NONSENSE", "DID_NOT_ORDER", "PRANK", "TEST_ORDER", "COMPETITOR", "REPEAT_REFUSER", "OTHER"] as const;
+export const RETURN_REASONS = [
   "PRICE_SHOCK",
   "NOT_AS_EXPECTED",
   "BOUGHT_ELSEWHERE",
@@ -98,6 +122,17 @@ export const assignSchema = z.object({
 
 export const duplicateSchema = z.object({ duplicateOfId: z.string().min(1) });
 
+const callObject = z.object({
+  outcome: z.enum(CALL_OUTCOMES),
+  proof: z.enum(CALL_PROOFS),
+  startedAt: z.coerce.date().optional(),
+  durationSec: z.number().int().min(0).optional(),
+  phoneNumberId: z.string().optional(),
+  recordingUrl: z.string().url().optional(),
+  note: z.string().max(2000).optional(),
+  agentId: z.string().optional(),
+});
+
 export const callSchema = z.object({
   call: z.object({
     outcome: z.enum(CALL_OUTCOMES),
@@ -113,16 +148,47 @@ export const callSchema = z.object({
   }),
 });
 
+export const checklistSchema = z.object({
+  productExplained: z.literal(true),
+  totalStated: z.literal(true),
+  addressVerified: z.literal(true),
+  variantVerified: z.literal(true),
+  explicitYes: z.literal(true),
+});
+
+/** Upsell (more units / bigger pack) or cross-sell (another product), only with an explicit yes (section 19c.8). */
+export const upsellSchema = z.object({
+  kind: z.enum(["UPSELL", "CROSS_SELL"]),
+  customerAgreed: z.literal(true),
+  items: z.array(z.object({ productId: z.string().min(1), variantId: z.string().nullable().optional(), qty: z.number().int().min(1).max(20), unitPrice: z.number().int().min(0).optional() })).min(1).max(5),
+});
+
 export const confirmSchema = z.object({
-  checklist: z.object({
-    productExplained: z.literal(true),
-    totalStated: z.literal(true),
-    addressVerified: z.literal(true),
-    variantVerified: z.literal(true),
-    explicitYes: z.literal(true),
-  }),
+  checklist: checklistSchema,
+  upsells: z.array(upsellSchema).max(3).optional(),
   note: z.string().max(2000).optional(),
 });
+
+export const claimSchema = z.object({}).passthrough();
+export const lockReleaseSchema = z.object({ reason: z.enum(["TIMEOUT", "SKIPPED", "RELEASED"]).default("RELEASED") });
+
+export const confirmPostponedSchema = z.object({
+  checklist: checklistSchema,
+  deliverOn: z.coerce.date(),
+  note: z.string().max(2000).optional(),
+});
+
+export const reconfirmSchema = z.object({ call: callObject, note: z.string().max(2000).optional() });
+
+export const reconfirmCancelSchema = z.object({
+  call: callObject,
+  cancelReason: z.enum(CANCEL_REASONS),
+  reasonNote: z.string().max(2000).optional(),
+});
+
+export const expireSchema = z.object({ job: z.string().optional() });
+
+export const recycleSchema = z.object({ assignedToId: z.string().min(1), podId: z.string().nullable().optional(), rule: z.string().optional() });
 
 export const confirmBotSchema = z.object({ messageId: z.string().optional() });
 
@@ -141,6 +207,7 @@ export const verifySchema = z.object({ comment: z.string().min(3).max(2000) });
 export const doubleResolveSchema = z.object({ verificationNote: z.string().min(2).max(2000) });
 
 export const fakeSchema = z.object({
+  fakeReason: z.enum(FAKE_REASONS).default("OTHER"),
   note: z.string().max(2000).optional(),
   blacklistRequest: z.boolean().optional(),
 });
@@ -184,6 +251,8 @@ const COURIER_PROGRESS_STATUSES: readonly OrderStatus[] = [
   "STOP_DESK",
   "EN_LIVRAISON",
   "CLIENT_INJOIGNABLE_LIVREUR",
+  "STOPDESK_SANS_REPONSE",
+  "EXPEDIE_REPORTE",
   "REPORTE_CLIENT",
   "ADRESSE_ERRONEE",
   "TENTATIVE_ECHOUEE",
@@ -218,8 +287,8 @@ export const TRANSITIONS: readonly TransitionRule[] = [
     to: ["APPEL_1", "APPEL_2", "APPEL_3"],
     actors: AGENT_ACTORS,
     schema: callSchema,
-    requires: [{ kind: "ATTEMPT_COUNT_LT", value: 9 }, { kind: "NEXT_ATTEMPT_STATUS" }],
-    sideEffects: ["SCHEDULE_NEXT_ATTEMPT"],
+    requires: [{ kind: "LOCK_OWNER" }, { kind: "ATTEMPT_COUNT_LT", value: 9 }, { kind: "NEXT_ATTEMPT_STATUS" }, { kind: "CALL_TIMING" }],
+    sideEffects: ["SCHEDULE_NEXT_ATTEMPT", "MISSED_CALL_MESSAGE", "WRITE_BACK"],
     description: "Agent logs a call attempt (proof required); APPEL_n is the attempt number within the day",
   },
   {
@@ -228,8 +297,8 @@ export const TRANSITIONS: readonly TransitionRule[] = [
     to: ["CONFIRMEE"],
     actors: AGENT_ACTORS,
     schema: confirmSchema,
-    requires: [{ kind: "ANSWERED_CALL" }],
-    sideEffects: ["SEND_WRITTEN_CONFIRMATION", "RESERVE_STOCK", "HANDOFF_TO_FOLLOWUP"],
+    requires: [{ kind: "LOCK_OWNER" }, { kind: "ANSWERED_CALL" }],
+    sideEffects: ["SEND_WRITTEN_CONFIRMATION", "RESERVE_STOCK", "HANDOFF_TO_FOLLOWUP", "WRITE_BACK"],
     description: "Confirmation checklist complete and at least one answered call",
   },
   {
@@ -238,7 +307,7 @@ export const TRANSITIONS: readonly TransitionRule[] = [
     to: ["CONFIRMEE_RUPTURE"],
     actors: AGENT_ACTORS,
     schema: confirmSchema,
-    requires: [{ kind: "ANSWERED_CALL" }, { kind: "STOCK_ZERO" }],
+    requires: [{ kind: "LOCK_OWNER" }, { kind: "ANSWERED_CALL" }, { kind: "STOCK_ZERO" }],
     sideEffects: ["WAITING_STOCK_TASK", "NOTIFY_SUPERVISOR"],
     description: "Customer confirmed but stock is 0",
   },
@@ -258,8 +327,8 @@ export const TRANSITIONS: readonly TransitionRule[] = [
     to: ["ANNULEE"],
     actors: AGENT_ACTORS,
     schema: cancelSchema,
-    requires: [{ kind: "ANSWERED_CALL" }, { kind: "NOTE_IF_OTHER" }],
-    sideEffects: ["QA_SAMPLE_POOL", "RELEASE_STOCK"],
+    requires: [{ kind: "LOCK_OWNER" }, { kind: "ANSWERED_CALL" }, { kind: "NOTE_IF_OTHER" }],
+    sideEffects: ["QA_SAMPLE_POOL", "RELEASE_STOCK", "WRITE_BACK"],
     description: "Customer cancelled on the phone (reason required)",
   },
   {
@@ -268,9 +337,19 @@ export const TRANSITIONS: readonly TransitionRule[] = [
     to: ["REPORTE"],
     actors: AGENT_ACTORS,
     schema: postponeSchema,
-    requires: [{ kind: "POSTPONE_MAX_DAYS", days: 7 }],
+    requires: [{ kind: "LOCK_OWNER" }, { kind: "POSTPONE_MAX_DAYS", days: 7 }],
     sideEffects: ["SET_NEXT_ACTION"],
     description: "Customer asked to be called back on a later date (max 7 days)",
+  },
+  {
+    id: "SOURCE_CANCEL",
+    from: [...CONFIRMATION_OPEN_STATUSES, "NOUVEAU", "CONFIRMEE", "CONFIRMEE_BOT", "CONFIRMEE_RUPTURE", "CONFIRMEE_REPORTEE"],
+    to: ["ANNULEE"],
+    actors: SYSTEM_ONLY,
+    schema: z.object({ cancelReason: z.enum(CANCEL_REASONS).default("CANCELLED_BY_CUSTOMER"), source: z.string().default("store") }),
+    requires: [],
+    sideEffects: ["RELEASE_STOCK"],
+    description: "Order cancelled in the source store (Shopify orders/cancelled, DZBuild order.cancelled) before shipping",
   },
   {
     id: "TO_VERIFY",
@@ -278,7 +357,7 @@ export const TRANSITIONS: readonly TransitionRule[] = [
     to: ["A_VERIFIER"],
     actors: AGENT_ACTORS,
     schema: verifySchema,
-    requires: [],
+    requires: [{ kind: "LOCK_OWNER" }],
     sideEffects: ["VERIFY_TASK"],
     description: "Something is off; supervisor task with 24 h SLA",
   },
@@ -308,9 +387,9 @@ export const TRANSITIONS: readonly TransitionRule[] = [
     to: ["FAUSSE_COMMANDE"],
     actors: SUPERVISOR_ACTORS,
     schema: fakeSchema,
-    requires: [{ kind: "ANY_LOGGED_CALL" }],
-    sideEffects: ["RELEASE_STOCK"],
-    description: "Agent proposed (flag FAKE_PROPOSED), supervisor finalizes; optional blacklist request",
+    requires: [{ kind: "SPACED_ATTEMPTS", exemptClearFake: true }],
+    sideEffects: ["RELEASE_STOCK", "WRITE_BACK"],
+    description: "Agent proposed (flag FAKE_PROPOSED), supervisor finalizes; needs enough spaced attempts unless the fake reason is clear",
   },
   {
     id: "UNREACHABLE",
@@ -318,9 +397,79 @@ export const TRANSITIONS: readonly TransitionRule[] = [
     to: ["INJOIGNABLE"],
     actors: SYSTEM_ONLY,
     schema: emptySchema,
-    requires: [{ kind: "ATTEMPT_COUNT_EQUALS", value: 9 }],
-    sideEffects: ["FINAL_UNREACHABLE_MESSAGE", "RELEASE_STOCK"],
-    description: "Scheduler only, after 9 logged attempts over 3 days",
+    requires: [{ kind: "UNREACHABLE_READY" }, { kind: "SPACED_ATTEMPTS" }],
+    sideEffects: ["FINAL_UNREACHABLE_MESSAGE", "RELEASE_STOCK", "WRITE_BACK"],
+    description: "Scheduler only, after 9 logged attempts over 3 days (or the cross-round cap)",
+  },
+  {
+    id: "CLAIM",
+    from: CLAIMABLE_STATUSES,
+    to: ["EN_COURS_CONFIRMATION"],
+    actors: ["SYSTEM", ...AGENT_ACTORS],
+    schema: claimSchema,
+    requires: [],
+    sideEffects: [],
+    description: "Agent opens the order from the queue: locked to them until they act or the lock times out",
+  },
+  {
+    id: "LOCK_RELEASE",
+    from: ["EN_COURS_CONFIRMATION"],
+    to: CLAIMABLE_STATUSES,
+    actors: ["SYSTEM", ...AGENT_ACTORS],
+    schema: lockReleaseSchema,
+    requires: [{ kind: "LOCK_PREVIOUS_STATUS" }, { kind: "LOCK_OWNER" }],
+    sideEffects: ["QUEUE_REFRESH"],
+    description: "Lock released (timeout after N minutes with no action, or agent skipped): back to the previous status",
+  },
+  {
+    id: "CONFIRM_POSTPONED",
+    from: CONFIRMATION_OPEN_STATUSES,
+    to: ["CONFIRMEE_REPORTEE"],
+    actors: AGENT_ACTORS,
+    schema: confirmPostponedSchema,
+    requires: [{ kind: "LOCK_OWNER" }, { kind: "ANSWERED_CALL" }, { kind: "CONFIRMED_POSTPONE_WINDOW" }],
+    sideEffects: ["SET_NEXT_ACTION", "WRITE_BACK"],
+    description: "Customer said yes but wants delivery later: re-queued on that date for a 1-question re-confirmation",
+  },
+  {
+    id: "RECONFIRM",
+    from: ["CONFIRMEE_REPORTEE"],
+    to: ["CONFIRMEE"],
+    actors: AGENT_ACTORS,
+    schema: reconfirmSchema,
+    requires: [{ kind: "PAYLOAD_CALL_ANSWERED" }],
+    sideEffects: ["SEND_WRITTEN_CONFIRMATION", "RESERVE_STOCK", "HANDOFF_TO_FOLLOWUP", "WRITE_BACK"],
+    description: "Re-confirmation call on the agreed date: ship",
+  },
+  {
+    id: "RECONFIRM_CANCEL",
+    from: ["CONFIRMEE_REPORTEE"],
+    to: ["ANNULEE"],
+    actors: AGENT_ACTORS,
+    schema: reconfirmCancelSchema,
+    requires: [{ kind: "PAYLOAD_CALL_ANSWERED" }, { kind: "NOTE_IF_OTHER" }],
+    sideEffects: ["QA_SAMPLE_POOL", "WRITE_BACK"],
+    description: "Re-confirmation call on the agreed date: the customer cancels",
+  },
+  {
+    id: "EXPIRE",
+    from: EXPIRABLE_STATUSES,
+    to: ["EXPIREE"],
+    actors: SYSTEM_ONLY,
+    schema: expireSchema,
+    requires: [{ kind: "SPACED_ATTEMPTS" }],
+    sideEffects: ["RELEASE_STOCK", "WRITE_BACK"],
+    description: "Nightly job (00:00 org time): still unconfirmed after the expiry window",
+  },
+  {
+    id: "RECYCLE",
+    from: ["EXPIREE", "INJOIGNABLE"],
+    to: ["ASSIGNEE"],
+    actors: ["SYSTEM", ...SUPERVISOR_ACTORS],
+    schema: recycleSchema,
+    requires: [{ kind: "RECYCLE_AVAILABLE" }],
+    sideEffects: ["SCHEDULE_NEXT_ATTEMPT"],
+    description: "Recycle round: a different agent, new attempt counter (max 1 round by default)",
   },
   {
     id: "READY_TO_SHIP",
@@ -331,6 +480,56 @@ export const TRANSITIONS: readonly TransitionRule[] = [
     requires: [{ kind: "NOT_FLAGGED", flag: "NEEDS_VERIFICATION" }],
     sideEffects: ["PRINT_LABEL"],
     description: "Items packed",
+  },
+  {
+    id: "PARCEL_CREATED",
+    from: ["CONFIRMEE", "CONFIRMEE_BOT", "EXPEDITION_RETARDEE"],
+    to: ["EN_PREPARATION"],
+    actors: ["SYSTEM", ...WAREHOUSE_ACTORS],
+    schema: z.object({ trackingNumber: z.string().min(2).max(100).optional(), courierId: z.string().optional(), labelUrl: z.string().optional() }),
+    requires: [{ kind: "NOT_FLAGGED", flag: "NEEDS_VERIFICATION" }],
+    sideEffects: ["PRINT_LABEL"],
+    description: "Courier parcel created (tracking + label); the warehouse prepares it",
+  },
+  {
+    id: "PACKED",
+    from: ["EN_PREPARATION"],
+    to: ["PRET_A_EXPEDIER"],
+    actors: ["SYSTEM", ...WAREHOUSE_ACTORS],
+    schema: readyToShipSchema,
+    requires: [],
+    sideEffects: ["PRINT_LABEL"],
+    description: "Items packed, label printed",
+  },
+  {
+    id: "SHIPPING_DELAYED",
+    from: ["CONFIRMEE", "CONFIRMEE_BOT", "EN_PREPARATION", "PRET_A_EXPEDIER"],
+    to: ["EXPEDITION_RETARDEE"],
+    actors: ["SYSTEM", ...SUPERVISOR_ACTORS],
+    schema: z.object({ reason: z.string().max(500).default("stuck"), releaseStock: z.boolean().default(false) }),
+    requires: [],
+    sideEffects: ["NOTIFY_SUPERVISOR"],
+    description: "Stuck-order watchdog (or supervisor bulk action): pre-shipping beyond the threshold; optional stock release",
+  },
+  {
+    id: "DELAYED_RESUMED",
+    from: ["EXPEDITION_RETARDEE"],
+    to: ["PRET_A_EXPEDIER"],
+    actors: WAREHOUSE_ACTORS,
+    schema: readyToShipSchema,
+    requires: [],
+    sideEffects: ["RESERVE_STOCK"],
+    description: "Delayed order packed after all",
+  },
+  {
+    id: "DELAYED_CANCELLED",
+    from: ["EXPEDITION_RETARDEE"],
+    to: ["ANNULEE"],
+    actors: SUPERVISOR_ACTORS,
+    schema: cancelSchema,
+    requires: [{ kind: "NOTE_IF_OTHER" }],
+    sideEffects: ["RELEASE_STOCK", "WRITE_BACK"],
+    description: "Delayed order cancelled after calling the customer",
   },
   {
     id: "STOCK_BACK",
@@ -448,6 +647,9 @@ export function allowedTargets(from: OrderStatus, actor: TransitionActor): Array
 }
 
 /** APPEL_n derived from the total attempt count (3 attempts per day). */
+/** Rule ids an agent uses from the call screen (the UI shows only these as buttons). */
+export const AGENT_DECISION_RULES = ["CONFIRM", "CONFIRM_OUT_OF_STOCK", "CONFIRM_POSTPONED", "CANCEL", "POSTPONE", "TO_VERIFY"] as const;
+
 export function nextAttemptStatus(attemptCount: number): OrderStatus {
   const n = attemptCount + 1;
   const withinDay = ((n - 1) % 3) + 1;

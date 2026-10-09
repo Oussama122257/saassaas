@@ -25,10 +25,21 @@ export interface World {
 
 export const SYSTEM = systemContext("test");
 
+export const PERMISSIVE_SETTINGS = {
+  calls: { strictSlots: false, dayStartMin: 0, dayEndMin: 1440, prayerWindows: [], fridayBlock: null, minAttemptGapMin: 0, minSlotsToClose: 1, minSpacedAttemptsToClose: 1 },
+};
+
+/** Restore the spec defaults (slots, blocked windows, 30-min spacing) on the agency. */
+export async function setAgencySettings(w: World, settings: Record<string, unknown>): Promise<void> {
+  await withSystemContext("fixtures", () => prisma.organization.update({ where: { id: w.agency.id }, data: { settings: settings as object } }));
+}
+
 export async function createWorld(): Promise<World> {
   return withSystemContext("fixtures", async () => {
     const passwordHash = hashPassword("password123");
-    const agency = await prisma.organization.create({ data: { type: "AGENCY", name: "Agency HQ", slug: `agency-${Date.now()}` } });
+    // Permissive call engine for the generic tests (calls at any time, no spacing); the phase-2
+    // acceptance tests switch the agency back to the strict defaults with strictCallSettings().
+    const agency = await prisma.organization.create({ data: { type: "AGENCY", name: "Agency HQ", slug: `agency-${Date.now()}`, settings: PERMISSIVE_SETTINGS } });
     const otherAgency = await prisma.organization.create({ data: { type: "AGENCY", name: "Other Agency", slug: `other-${Date.now()}` } });
     const merchantA = await prisma.organization.create({ data: { type: "MERCHANT", name: "Merchant A", slug: `ma-${Date.now()}` } });
     const merchantB = await prisma.organization.create({ data: { type: "MERCHANT", name: "Merchant B", slug: `mb-${Date.now()}` } });
@@ -114,6 +125,7 @@ export async function newOrder(w: World, merchant: "A" | "B" | "S", overrides: P
     storeId: m.storeId,
     customer: { name: "Test Client", phone: nextPhone() },
     wilaya: 16,
+    address: "Cité 200 logements, Bt C n°12",
     items: [{ productId: m.productId, variantId: merchant === "A" ? w.merchantA.variantId : null, qty: 1 }],
     shippingFee: 500,
     skipDuplicateCheck: true,

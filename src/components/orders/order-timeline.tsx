@@ -14,7 +14,7 @@ export async function OrderTimeline({ events, locale, timezone }: { events: Orde
           <li key={e.id} className="relative">
             <span className={`absolute -start-[1.45rem] top-1.5 size-3 rounded-full border-2 border-background ${e.type === "OVERRIDE" ? "bg-rose-500" : "bg-primary"}`} aria-hidden />
             <div className="flex flex-wrap items-center gap-2 text-sm">
-              <span className="font-medium">{t(`events.${e.type}` as never)}</span>
+              <span className="font-medium">{t.has(`events.${e.type}` as never) ? t(`events.${e.type}` as never) : e.type}</span>
               {e.fromStatus ? <StatusBadge status={e.fromStatus} locale={locale} className="text-[11px]" /> : null}
               {e.toStatus ? (
                 <>

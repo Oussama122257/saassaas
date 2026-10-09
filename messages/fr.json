@@ -48,7 +48,10 @@
     "team": "Équipe",
     "stock": "Stock",
     "reports": "Rapports",
-    "portal": "Portail client"
+    "portal": "Portail client",
+    "stores": "Boutiques",
+    "newOrder": "Nouvelle commande",
+    "unmatched": "Produits non reconnus"
   },
   "roles": {
     "PLATFORM_ADMIN": "Admin plateforme",
@@ -139,7 +142,11 @@
       "done": "{count} commande(s) réassignée(s)"
     },
     "empty": "Aucune commande ne correspond à ces filtres.",
-    "count": "{count} commande(s)"
+    "count": "{count} commande(s)",
+    "repeatBadge": "Client récurrent",
+    "import": "Importer CSV",
+    "exportExcel": "Exporter Excel",
+    "newOrder": "Nouvelle commande"
   },
   "order": {
     "title": "Commande #{seq}",
@@ -215,7 +222,14 @@
       "OVERRIDE": "Forçage superviseur",
       "COURIER_SYNC": "Synchro transporteur",
       "MESSAGE_SENT": "Message envoyé",
-      "CALL_LOGGED": "Appel enregistré"
+      "CALL_LOGGED": "Appel enregistré",
+      "LOCK": "Ouverte par l'agent (verrou)",
+      "UNLOCK": "Verrou libéré",
+      "LOCK_TIMEOUT": "Verrou expiré",
+      "EXPIRE": "Expirée (job de nuit)",
+      "RECYCLE": "Recyclée (nouvel agent)",
+      "REQUEUE": "Remise dans la file",
+      "STUCK_ALERT": "Alerte commande bloquée"
     },
     "taskTypes": {
       "RESCUE_NO_ANSWER": "Sauvetage : client injoignable",
@@ -237,7 +251,8 @@
     "outcomeLabel": "Résultat",
     "proofLabel": "Preuve",
     "durationLabel": "Durée (s)",
-    "dayLabel": "Jour / créneau"
+    "dayLabel": "Jour / créneau",
+    "comments": "Commentaires"
   },
   "transition": {
     "changeStatus": "Changer le statut",
@@ -281,7 +296,11 @@
       "conditionMISSING": "Manquant",
       "note": "Note",
       "amount": "Montant encaissé",
-      "assignedToId": "Agent"
+      "assignedToId": "Agent",
+      "deliverOn": "Livrer le",
+      "reconfirmHint": "Appel de re-confirmation (une question) : le client confirme toujours ?",
+      "releaseStock": "Libérer le stock réservé",
+      "fakeReason": "Motif (fausse commande)"
     },
     "errors": {
       "ORDER_NOT_FOUND": "Commande introuvable.",
@@ -291,7 +310,8 @@
       "INVALID_PAYLOAD": "Champs obligatoires manquants ou invalides.",
       "PRECONDITION_FAILED": "Condition non remplie : {detail}",
       "FORBIDDEN": "Action non autorisée.",
-      "UNKNOWN": "Erreur inattendue."
+      "UNKNOWN": "Erreur inattendue.",
+      "ORDER_LOCKED": "Un autre agent travaille sur cette commande."
     }
   },
   "audit": {
@@ -365,10 +385,303 @@
       "customFr": "Libellé FR personnalisé",
       "customAr": "Libellé AR personnalisé",
       "saved": "Libellés enregistrés"
+    },
+    "stores": {
+      "title": "Boutiques et intégrations",
+      "description": "Shopify, DZBuild, Google Sheets, formulaires et webhooks, mapping des champs."
+    },
+    "operations": {
+      "title": "Règles opérationnelles",
+      "description": "Créneaux d'appel, délais, attribution, anti-fraude, numéros A/B/C."
     }
   },
   "errors": {
     "forbidden": "Vous n'avez pas accès à cette page.",
     "notFound": "Page introuvable."
+  },
+  "availability": {
+    "label": "Disponibilité",
+    "AVAILABLE": "Disponible",
+    "BREAK": "Pause",
+    "OFFLINE": "Hors ligne",
+    "released": "{count} commande(s) remise(s) dans le pool"
+  },
+  "queue": {
+    "title": "File d'appels",
+    "subtitle": "Une commande à la fois, servie par la file. Vous ne choisissez pas vos commandes.",
+    "start": "Commande suivante",
+    "empty": "Aucune commande à traiter pour l'instant.",
+    "nextAt": "Prochaine commande prévue : {time}",
+    "blocked": "Les appels sont bloqués maintenant ({reason}).",
+    "blockReason": {
+      "BEFORE_HOURS": "avant 09:00",
+      "AFTER_HOURS": "après 21:00",
+      "PRAYER": "heure de prière",
+      "FRIDAY_MIDDAY": "vendredi midi"
+    },
+    "stats": {
+      "due": "À traiter",
+      "upcoming": "Planifiées",
+      "callbacks": "Rappels",
+      "newOrders": "Jamais appelées",
+      "doneToday": "Appels aujourd'hui"
+    },
+    "shortcuts": "Raccourcis : 1–6 résultat de l'appel · C confirmer · S passer"
+  },
+  "call": {
+    "locked": "Verrouillée pour vous — libérée automatiquement après {min} min sans action",
+    "lockedByOther": "En cours de traitement par {name}",
+    "customer": "Client",
+    "repeat": "{count} commande(s) précédente(s)",
+    "firstOrder": "Premier achat",
+    "callNow": "Appeler",
+    "fromNumber": "Numéro sortant : {label}",
+    "order": "Commande",
+    "totalToPay": "Total à payer à la porte",
+    "shipping": "dont livraison {fee}",
+    "script": "Script",
+    "sellingPoints": "Points forts",
+    "sizeGuide": "Guide des tailles",
+    "faq": "FAQ",
+    "noSheet": "Pas de fiche produit pour cet article.",
+    "sheetNotApproved": "Fiche non approuvée par le marchand",
+    "seriousness": "Test de sérieux (4 questions)",
+    "seriousnessQ1": "Cette commande est bien pour vous ?",
+    "seriousnessQ2": "Serez-vous disponible le jour de la livraison ?",
+    "seriousnessQ3": "Vous confirmez le montant total de {total} ?",
+    "seriousnessQ4": "Ce numéro sera joignable pour le livreur ?",
+    "attempt": "Tentative {n}/{max}",
+    "logAttempt": "Résultat de cet appel",
+    "duration": "Durée (s)",
+    "callbackAt": "Rappeler à",
+    "manualProof": "Sans preuve d'appel (mode manuel, signalé dans les KPI)",
+    "nextAllowed": "Prochaine tentative autorisée : {time}",
+    "decision": "Décision",
+    "checklist": "Checklist (tout cocher pour confirmer)",
+    "upsell": "Upsell / cross-sell accepté par le client",
+    "upsellKindLabel": "Type",
+    "upsellKind": {
+      "UPSELL": "Upsell (plus d'unités / pack)",
+      "CROSS_SELL": "Cross-sell (autre produit)"
+    },
+    "upsellProduct": "Produit ajouté",
+    "qty": "Qté",
+    "confirm": "Confirmer",
+    "confirmPostponed": "Confirmé – livrer plus tard",
+    "confirmOutOfStock": "Confirmer (rupture)",
+    "postpone": "Reporter (non confirmé)",
+    "toVerify": "À vérifier",
+    "cancel": "Annuler",
+    "fake": "Proposer fausse commande",
+    "skip": "Passer",
+    "reconfirm": "Re-confirmer et expédier",
+    "reconfirmCancel": "Annuler (re-confirmation)",
+    "reconfirmTitle": "Re-confirmation à la date convenue",
+    "timeline": "Tentatives",
+    "comments": "Commentaires",
+    "commentPlaceholder": "Commentaire…",
+    "addComment": "Ajouter",
+    "unmatched": "Lignes non reconnues : à rattacher à un produit",
+    "stock": "Stock disponible : {n}",
+    "done": "Enregistré",
+    "backToQueue": "Retour à la file",
+    "mappingErrors": "Problèmes à l'intake"
+  },
+  "comments": {
+    "tags": {
+      "NRP": "NRP",
+      "SMS_ENVOYE": "SMS envoyé",
+      "COULEUR_TAILLE": "Couleur / taille",
+      "LIVREUR": "Livreur",
+      "SUIVI": "Suivi",
+      "ADRESSE": "Adresse",
+      "PRIX": "Prix",
+      "RAPPEL": "Rappel"
+    },
+    "quick": {
+      "nrpMsg": "nrp + msj",
+      "smsSent": "sms envoyé",
+      "livreur": "livreur ma 3aytch"
+    }
+  },
+  "manualOrder": {
+    "title": "Nouvelle commande",
+    "subtitle": "Saisie manuelle — passe par les mêmes contrôles que les commandes des boutiques.",
+    "store": "Boutique",
+    "externalId": "ID commande externe (optionnel)",
+    "name": "Nom du client",
+    "phone": "Téléphone",
+    "phone2": "Téléphone 2",
+    "wilaya": "Wilaya",
+    "commune": "Commune",
+    "address": "Adresse",
+    "address2": "Adresse 2",
+    "landmark": "Point de repère",
+    "note": "Remarques",
+    "abandoned": "Récupération de panier abandonné",
+    "product": "Produit",
+    "variant": "Variante",
+    "qty": "Qté",
+    "addLine": "Ajouter un produit",
+    "deliveryType": "Type de livraison",
+    "home": "À domicile",
+    "shippingFee": "Frais de livraison",
+    "freeDelivery": "Livraison gratuite",
+    "total": "Total à payer",
+    "create": "Créer la commande"
+  },
+  "importOrders": {
+    "title": "Importer des commandes (CSV / Excel)",
+    "subtitle": "Enregistrez votre fichier Excel en CSV puis importez-le. Une ligne = une commande.",
+    "store": "Boutique",
+    "hint": "Colonnes reconnues : external_id, name, phone, phone2, wilaya, commune, address, landmark, product ou sku, variant, qty, price, shipping_fee, total, delivery_type, note. Réimporter le même external_id ne crée pas de doublon.",
+    "run": "Importer",
+    "template": "Modèle CSV",
+    "result": "{created} créée(s), {existing} déjà présente(s), {errors} erreur(s)"
+  },
+  "stores": {
+    "title": "Boutiques et intégrations",
+    "subtitle": "Shopify, DZBuild, Google Sheets, formulaires, API — toutes les commandes passent par la même chaîne d'intake.",
+    "name": "Nom",
+    "channel": "Canal",
+    "connection": "Connexion",
+    "orders30d": "Commandes 30 j",
+    "mappingErrors": "Erreurs de mapping",
+    "lastSync": "Dernière synchro",
+    "state": {
+      "CONNECTED": "Connectée",
+      "DISCONNECTED": "Non connectée",
+      "ERROR": "Erreur"
+    },
+    "create": "Ajouter une boutique",
+    "createButton": "Créer",
+    "connect": "Connexion",
+    "connectedNotice": "Boutique connectée. Import des produits et des commandes ouvertes des 7 derniers jours en cours.",
+    "shopifyHelp": "Créez une app personnalisée (distribution custom) dans le Partner Dashboard, puis collez son domaine, client ID et secret et lancez l'installation OAuth.",
+    "clientId": "Client ID",
+    "clientSecret": "Client secret",
+    "install": "Installer sur Shopify",
+    "reinstall": "Réinstaller",
+    "backfill": "Réimporter (produits + 7 jours)",
+    "backfillQueued": "Import lancé en arrière-plan.",
+    "webhookEndpoint": "Endpoint webhook (vérifié HMAC)",
+    "dzbuildHelp": "Clé personnelle DZBuild (plan Enterprise → Paramètres → API), format key_id.key_secret. Scopes : orders:read, orders:write, webhooks:*, customers:read, products:read.",
+    "testAndSave": "Tester et enregistrer",
+    "testOk": "Connexion réussie",
+    "syncNow": "Synchroniser maintenant",
+    "webhookUrl": "URL du webhook à saisir dans DZBuild",
+    "webhookSecret": "Secret de signature",
+    "sheetHelp": "Partagez la feuille en « Tous les utilisateurs disposant du lien peuvent consulter ». Interrogée toutes les 10 minutes.",
+    "hasHeader": "Ligne d'en-tête",
+    "intakeTitle": "Formulaire public / webhook générique",
+    "intakeHelp": "Pour les landing pages et les autres constructeurs de boutiques (YouCan, WooCommerce, Lightfunnels…) : un jeton + le mapping des champs ci-dessous.",
+    "createToken": "Générer un jeton",
+    "rotateToken": "Régénérer le jeton",
+    "intakeUrl": "URL du formulaire (POST)",
+    "intakeToken": "Jeton (en-tête X-Intake-Token)",
+    "genericWebhookUrl": "URL webhook générique",
+    "shownOnce": "Copiez ces valeurs maintenant : elles ne seront plus affichées.",
+    "mapping": "Mapping des champs",
+    "mappingHelp": "Chemin source → notre champ. Exemples : shipping_address.province · note_attributes[name=Wilaya].value · a | b (premier non vide) · =\"STOP_DESK\" (constante) · columns.D (Google Sheets). Vide = valeur par défaut affichée.",
+    "preview": "Aperçu sur les 5 dernières commandes",
+    "saveMapping": "Enregistrer le mapping",
+    "noPayloads": "Aucune commande reçue pour l'instant.",
+    "saved": "Enregistré",
+    "options": "Options et retour d'information",
+    "writeBack": {
+      "tags": "Tag cc:<STATUT> sur la commande Shopify",
+      "cancel": "Annuler dans la boutique (Annulée, Fausse, Double)",
+      "fulfill": "Créer le fulfillment avec le tracking",
+      "markPaid": "Marquer payée à la livraison",
+      "status": "Renvoyer le statut (confirmed, shipped, delivered, returned)",
+      "note": "Note sur la commande en cas de modification"
+    },
+    "backfillDays": "Jours d'historique à importer",
+    "active": "Boutique active",
+    "save": "Enregistrer"
+  },
+  "ops": {
+    "title": "Règles opérationnelles",
+    "subtitle": "Créneaux d'appel, fenêtres bloquées, délais, attribution et anti-fraude. Toutes les règles sont appliquées par le système.",
+    "cadence": "Cadence d'appel (3 × 3)",
+    "minGap": "Écart minimum entre 2 tentatives (min)",
+    "cadenceGap": "Écart planifié (min)",
+    "firstCall": "1er appel dans (min)",
+    "maxPerRound": "Tentatives par tour",
+    "maxTotal": "Plafond de tentatives (tous tours)",
+    "minSpaced": "Tentatives espacées avant Fausse/Expirée",
+    "strictSlots": "Créneaux verrouillés (tentative hors créneau refusée)",
+    "slot": {
+      "MORNING": "Matin",
+      "AFTERNOON": "Après-midi",
+      "EVENING": "Soir"
+    },
+    "dayStart": "Pas d'appel avant",
+    "dayEnd": "Pas d'appel après",
+    "prayer": "Heures de prière bloquées (HH:MM-HH:MM, …)",
+    "friday": "Bloquer vendredi midi (12:00–14:30)",
+    "minAnswered": "Durée min. d'un appel répondu (s)",
+    "highValue": "Seuil commande à forte valeur (DA)",
+    "manualProof": "Autoriser les tentatives sans preuve (signalées dans les KPI)",
+    "mandatoryNote": "Note obligatoire pour Annulée / Fausse commande",
+    "lifecycle": "Verrou, expiration et recyclage",
+    "lockTimeout": "Libérer le verrou après (min)",
+    "untouched": "Réassigner si non traitée après (min)",
+    "expiryDays": "Expirer après le dernier jour d'appel (jours)",
+    "recycleCooldown": "Délai avant recyclage (jours)",
+    "recycleRounds": "Tours de recyclage max",
+    "assignment": "Attribution",
+    "strategy": "Stratégie",
+    "loadBalanced": "Round-robin pondéré par la charge",
+    "percentage": "Répartition par pourcentage",
+    "cap": "Commandes ouvertes max par agent",
+    "totalPercent": "Total : {total} % (doit faire 100 %)",
+    "ownershipLock": "Verrou de propriété : un agent n'agit que sur ses commandes",
+    "topAgents": "Commandes à forte valeur → meilleurs agents",
+    "requireShift": "N'assigner qu'aux agents en service",
+    "intake": "Anti-fraude à l'intake",
+    "ipLimit": "Limiter les commandes par IP (formulaires publics / API)",
+    "ipMax": "Max commandes",
+    "ipHours": "Fenêtre (heures)",
+    "dupWindow": "Fenêtre doublons (h)",
+    "ipHint": "Défaut 3 / 12 h ; 10 / 12 h conseillé derrière le NAT des opérateurs mobiles.",
+    "blacklistMode": "Numéros en liste noire",
+    "blacklistFlag": "Accepter et signaler",
+    "blacklistRefuse": "Refuser à l'intake",
+    "numbers": "Numéros sortants (rotation A → B → C)",
+    "numbersHint": "Taux de réponse calculé chaque jour ; un numéro sous 25 % pendant 3 jours est retiré (grillé).",
+    "burned": "Grillé",
+    "deactivate": "Désactiver",
+    "activate": "Activer",
+    "add": "Ajouter",
+    "save": "Enregistrer",
+    "saved": "Enregistré"
+  },
+  "team": {
+    "title": "Équipe",
+    "subtitle": "Statistiques du jour par agent, disponibilité en direct et horaires de service.",
+    "agent": "Agent",
+    "pod": "Pod",
+    "attempts": "Tentatives",
+    "confirmations": "Confirmations",
+    "actions": "Actions",
+    "assigned": "Assignées",
+    "lastActivity": "Dernière activité",
+    "shifts": "Horaires",
+    "save": "OK",
+    "weekday": {
+      "0": "Dim",
+      "1": "Lun",
+      "2": "Mar",
+      "3": "Mer",
+      "4": "Jeu",
+      "5": "Ven",
+      "6": "Sam"
+    }
+  },
+  "unmatched": {
+    "title": "Produits non reconnus",
+    "subtitle": "{count} commande(s) avec un SKU inconnu. Rattachez chaque SKU une fois : il sera appliqué automatiquement ensuite.",
+    "empty": "Rien à rattacher."
   }
 }

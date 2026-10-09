@@ -22,6 +22,10 @@ export type JobPayloads = {
   "order.assigned": { orderId: string; merchantId: string; fromUserId: string | null; toUserId: string; rule: string };
   "scheduler.tick": { at: string };
   "message.send": { orderId: string | null; template: string; to: string; channel: "WHATSAPP" | "SMS"; vars: Record<string, string> };
+  "notify.owner": { orgId: string; kind: string; message: string };
+  "store.writeback": { orderId: string; storeId: string; event: string; status: string };
+  "store.poll": { storeId: string };
+  "store.backfill": { storeId: string; days?: number };
 };
 export type JobName = keyof JobPayloads;
 
@@ -30,6 +34,10 @@ const QUEUE_FOR_JOB: Record<JobName, QueueName> = {
   "order.assigned": "events",
   "scheduler.tick": "scheduler",
   "message.send": "messaging",
+  "notify.owner": "messaging",
+  "store.writeback": "events",
+  "store.poll": "events",
+  "store.backfill": "events",
 };
 
 export interface MemoryJob {

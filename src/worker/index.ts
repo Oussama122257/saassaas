@@ -9,6 +9,8 @@ import { handleStatusChanged } from "./jobs/statusChanged";
 import { handleOrderAssigned } from "./jobs/orderAssigned";
 import { handleSchedulerTick } from "./jobs/schedulerTick";
 import { handleMessageSend } from "./jobs/messageSend";
+import { handleStoreBackfill, handleStorePoll, handleStoreWriteback } from "./jobs/stores";
+import { handleNotifyOwner } from "./jobs/notify";
 
 type Handler<N extends JobName> = (job: Job<JobPayloads[N]>) => Promise<void>;
 
@@ -17,6 +19,10 @@ const handlers: { [N in JobName]: Handler<N> } = {
   "order.assigned": handleOrderAssigned,
   "scheduler.tick": handleSchedulerTick,
   "message.send": handleMessageSend,
+  "notify.owner": handleNotifyOwner,
+  "store.writeback": handleStoreWriteback,
+  "store.poll": handleStorePoll,
+  "store.backfill": handleStoreBackfill,
 };
 
 function log(scope: string, msg: string, extra?: unknown) {

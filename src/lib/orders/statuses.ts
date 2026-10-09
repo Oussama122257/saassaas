@@ -22,11 +22,13 @@ export const STATUS_META: Record<OrderStatus, StatusMeta> = {
   // ── confirmation ──
   NOUVEAU: { code: "NOUVEAU", group: "CONFIRMATION", fr: "Nouveau", ar: "جديدة", setBy: ["SYSTEM"], tone: "neutral" },
   ASSIGNEE: { code: "ASSIGNEE", group: "CONFIRMATION", fr: "Assignée", ar: "معينة", setBy: ["SYSTEM"], tone: "info" },
+  EN_COURS_CONFIRMATION: { code: "EN_COURS_CONFIRMATION", group: "CONFIRMATION", fr: "En cours de confirmation", ar: "قيد التأكيد", setBy: ["SYSTEM"], tone: "info" },
   APPEL_1: { code: "APPEL_1", group: "CONFIRMATION", fr: "Appel 1", ar: "مكالمة 1", setBy: ["AGENT"], tone: "info" },
   APPEL_2: { code: "APPEL_2", group: "CONFIRMATION", fr: "Appel 2", ar: "مكالمة 2", setBy: ["AGENT"], tone: "info" },
   APPEL_3: { code: "APPEL_3", group: "CONFIRMATION", fr: "Appel 3", ar: "مكالمة 3", setBy: ["AGENT"], tone: "info" },
-  REPORTE: { code: "REPORTE", group: "CONFIRMATION", fr: "Reporté", ar: "مؤجلة", setBy: ["AGENT"], tone: "warning" },
+  REPORTE: { code: "REPORTE", group: "CONFIRMATION", fr: "Reporté non confirmé", ar: "مؤجلة قبل التأكيد", setBy: ["AGENT"], tone: "warning" },
   A_VERIFIER: { code: "A_VERIFIER", group: "CONFIRMATION", fr: "À vérifier", ar: "للتحقق", setBy: ["AGENT", "SYSTEM"], tone: "warning" },
+  CONFIRMEE_REPORTEE: { code: "CONFIRMEE_REPORTEE", group: "CONFIRMATION", fr: "Confirmé – Reporté", ar: "مؤكدة مؤجلة", setBy: ["AGENT"], tone: "success" },
   CONFIRMEE: { code: "CONFIRMEE", group: "CONFIRMATION", fr: "Confirmée", ar: "مؤكدة", setBy: ["AGENT", "SYSTEM"], tone: "success" },
   CONFIRMEE_BOT: { code: "CONFIRMEE_BOT", group: "CONFIRMATION", fr: "Confirmée (Bot)", ar: "مؤكَّدة (Bot)", setBy: ["SYSTEM"], tone: "success" },
   CONFIRMEE_RUPTURE: { code: "CONFIRMEE_RUPTURE", group: "CONFIRMATION", fr: "Confirmée Rupture de stock", ar: "مؤكدة بلا مخزون", setBy: ["AGENT"], tone: "warning" },
@@ -34,14 +36,19 @@ export const STATUS_META: Record<OrderStatus, StatusMeta> = {
   DOUBLE: { code: "DOUBLE", group: "CONFIRMATION", fr: "Double", ar: "مكررة", setBy: ["SYSTEM", "AGENT"], terminal: true, tone: "neutral" },
   FAUSSE_COMMANDE: { code: "FAUSSE_COMMANDE", group: "CONFIRMATION", fr: "Fausse Commande", ar: "طلبية وهمية", setBy: ["SUPERVISOR"], terminal: true, tone: "danger" },
   INJOIGNABLE: { code: "INJOIGNABLE", group: "CONFIRMATION", fr: "Injoignable", ar: "لا يمكن الوصول إليه", setBy: ["SYSTEM"], terminal: true, tone: "neutral" },
+  EXPIREE: { code: "EXPIREE", group: "CONFIRMATION", fr: "Expirée", ar: "منتهية", setBy: ["SYSTEM"], terminal: true, tone: "neutral" },
   // ── shipping ──
+  EN_PREPARATION: { code: "EN_PREPARATION", group: "SHIPPING", fr: "En préparation", ar: "قيد التحضير", setBy: ["SYSTEM", "WAREHOUSE"], tone: "info" },
   PRET_A_EXPEDIER: { code: "PRET_A_EXPEDIER", group: "SHIPPING", fr: "Prêt à expédier", ar: "جاهزة للشحن", setBy: ["WAREHOUSE"], tone: "info" },
+  EXPEDITION_RETARDEE: { code: "EXPEDITION_RETARDEE", group: "SHIPPING", fr: "Expédition retardée", ar: "شحن متأخر", setBy: ["SYSTEM", "SUPERVISOR"], tone: "danger" },
   EXPEDIE: { code: "EXPEDIE", group: "SHIPPING", fr: "Ramassé / En transit", ar: "في الطريق", setBy: ["COURIER", "WAREHOUSE"], tone: "info" },
   // ── delivery ──
   ARRIVE_WILAYA: { code: "ARRIVE_WILAYA", group: "DELIVERY", fr: "Arrivé à la wilaya", ar: "وصلت إلى الولاية", setBy: ["COURIER"], tone: "info" },
   STOP_DESK: { code: "STOP_DESK", group: "DELIVERY", fr: "Au bureau (Stop Desk)", ar: "في المكتب", setBy: ["COURIER"], tone: "info" },
   EN_LIVRAISON: { code: "EN_LIVRAISON", group: "DELIVERY", fr: "Sorti en livraison", ar: "عند الموزع", setBy: ["COURIER"], tone: "info" },
   CLIENT_INJOIGNABLE_LIVREUR: { code: "CLIENT_INJOIGNABLE_LIVREUR", group: "DELIVERY", fr: "Client ne répond pas au livreur", ar: "الزبون لا يرد على الموزع", setBy: ["COURIER"], tone: "warning" },
+  STOPDESK_SANS_REPONSE: { code: "STOPDESK_SANS_REPONSE", group: "DELIVERY", fr: "Stop desk – client ne répond pas", ar: "مكتب – الزبون لا يرد", setBy: ["COURIER"], tone: "warning" },
+  EXPEDIE_REPORTE: { code: "EXPEDIE_REPORTE", group: "DELIVERY", fr: "Expédié – Reporté (courier)", ar: "شحنة مؤجلة من الشركة", setBy: ["COURIER"], tone: "warning" },
   REPORTE_CLIENT: { code: "REPORTE_CLIENT", group: "DELIVERY", fr: "Reporté par le client", ar: "مؤجلة من طرف الزبون", setBy: ["COURIER"], tone: "warning" },
   ADRESSE_ERRONEE: { code: "ADRESSE_ERRONEE", group: "DELIVERY", fr: "Adresse / numéro erroné", ar: "عنوان أو رقم خاطئ", setBy: ["COURIER"], tone: "warning" },
   TENTATIVE_ECHOUEE: { code: "TENTATIVE_ECHOUEE", group: "DELIVERY", fr: "Tentative échouée", ar: "محاولة فاشلة", setBy: ["COURIER"], tone: "warning" },
@@ -70,13 +77,23 @@ export const DELIVERY_STATUSES = statusesInGroup("DELIVERY");
 export const RETURN_STATUSES = statusesInGroup("RETURN");
 export const CLOSED_STATUSES = statusesInGroup("CLOSED");
 
-/** Statuses where a confirmation agent is still working the order. */
-export const CONFIRMATION_OPEN_STATUSES: OrderStatus[] = ["ASSIGNEE", "APPEL_1", "APPEL_2", "APPEL_3", "REPORTE", "A_VERIFIER"];
+/** Statuses where a confirmation agent is still working the order (decision not taken yet). */
+export const CONFIRMATION_OPEN_STATUSES: OrderStatus[] = ["ASSIGNEE", "EN_COURS_CONFIRMATION", "APPEL_1", "APPEL_2", "APPEL_3", "REPORTE", "A_VERIFIER"];
+
+/** Statuses an agent can claim (lock) from the queue. */
+export const CLAIMABLE_STATUSES: OrderStatus[] = ["ASSIGNEE", "APPEL_1", "APPEL_2", "APPEL_3", "REPORTE", "A_VERIFIER"];
+
+/** Unconfirmed statuses the nightly expiry job may move to EXPIREE. */
+export const EXPIRABLE_STATUSES: OrderStatus[] = ["ASSIGNEE", "APPEL_1", "APPEL_2", "APPEL_3", "REPORTE", "A_VERIFIER"];
 
 /** Everything before a confirmation decision (follow-up agents do not see these). */
 export const PRE_CONFIRMATION_STATUSES: OrderStatus[] = ["NOUVEAU", ...CONFIRMATION_OPEN_STATUSES, "DOUBLE"];
 
-export const CONFIRMED_STATUSES: OrderStatus[] = ["CONFIRMEE", "CONFIRMEE_BOT", "CONFIRMEE_RUPTURE"];
+/** All CONFIRMEE* codes (KPIs: confirmation rate numerator). */
+export const CONFIRMED_STATUSES: OrderStatus[] = ["CONFIRMEE", "CONFIRMEE_BOT", "CONFIRMEE_RUPTURE", "CONFIRMEE_REPORTEE"];
+
+/** Confirmed and waiting for the warehouse / courier (stuck-order watchdog, stock reserved). */
+export const PRE_SHIPPING_STATUSES: OrderStatus[] = ["CONFIRMEE", "CONFIRMEE_BOT", "EN_PREPARATION", "PRET_A_EXPEDIER", "EXPEDITION_RETARDEE"];
 
 /** Delivery statuses that are "in the courier's hands" and can still move. */
 export const IN_TRANSIT_STATUSES: OrderStatus[] = [
@@ -85,6 +102,8 @@ export const IN_TRANSIT_STATUSES: OrderStatus[] = [
   "STOP_DESK",
   "EN_LIVRAISON",
   "CLIENT_INJOIGNABLE_LIVREUR",
+  "STOPDESK_SANS_REPONSE",
+  "EXPEDIE_REPORTE",
   "REPORTE_CLIENT",
   "ADRESSE_ERRONEE",
   "TENTATIVE_ECHOUEE",
@@ -95,6 +114,7 @@ export const IN_TRANSIT_STATUSES: OrderStatus[] = [
 /** Courier-reported problems that need a rescue by the follow-up agent (section 10). */
 export const DELIVERY_ISSUE_STATUSES: OrderStatus[] = [
   "CLIENT_INJOIGNABLE_LIVREUR",
+  "STOPDESK_SANS_REPONSE",
   "REPORTE_CLIENT",
   "ADRESSE_ERRONEE",
   "TENTATIVE_ECHOUEE",
@@ -157,8 +177,26 @@ export const CANCEL_REASON_LABELS = {
   WRONG_PRODUCT_OR_SIZE: { fr: "Mauvais produit / taille", ar: "منتج أو مقاس خاطئ" },
   DELIVERY_TOO_SLOW: { fr: "Livraison trop lente", ar: "التوصيل بطيء" },
   DID_NOT_ORDER: { fr: "N'a pas commandé", ar: "لم يطلب" },
+  CANCELLED_BY_CUSTOMER: { fr: "Annulé par le client", ar: "ألغاها الزبون" },
+  WRONG_INFORMATION: { fr: "Informations erronées", ar: "معلومات خاطئة" },
+  NO_LONGER_INTERESTED: { fr: "Plus intéressé", ar: "لم يعد مهتما" },
+  CUSTOMER_ABSENT: { fr: "Client absent", ar: "الزبون غائب" },
   OTHER: { fr: "Autre", ar: "أخرى" },
 } as const;
+
+export const FAKE_REASON_LABELS = {
+  INVALID_PHONE: { fr: "Numéro invalide", ar: "رقم غير صالح" },
+  NAME_NONSENSE: { fr: "Nom fantaisiste", ar: "اسم غير منطقي" },
+  DID_NOT_ORDER: { fr: "N'a pas commandé", ar: "لم يطلب" },
+  PRANK: { fr: "Canular", ar: "مزحة" },
+  TEST_ORDER: { fr: "Commande test", ar: "طلبية تجريبية" },
+  COMPETITOR: { fr: "Concurrent", ar: "منافس" },
+  REPEAT_REFUSER: { fr: "Refus répétés", ar: "رفض متكرر" },
+  OTHER: { fr: "Autre", ar: "أخرى" },
+} as const;
+
+/** Fake reasons clear enough to skip the "enough spaced attempts" rule (section 19c.1). */
+export const CLEAR_FAKE_REASONS = ["INVALID_PHONE", "TEST_ORDER"] as const;
 
 export const RETURN_REASON_LABELS = {
   PRICE_SHOCK: { fr: "Choc du prix", ar: "صدمة السعر" },

@@ -1,7 +1,8 @@
 import type { NextRequest, NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { ForbiddenError, NotFoundError } from "@/lib/tenant";
-import { OrderValidationError, TransitionError } from "@/lib/orders/orderTransitions";
+import { IntakeRefusedError, OrderValidationError, TransitionError } from "@/lib/orders/orderTransitions";
+import { IntakeRateLimitedError, IntakeValidationError } from "@/lib/ingest/pipeline";
 import { ApiError } from "./errors";
 import { fail, ok, resolveRequestId } from "./envelope";
 import { authenticateApiKey, requireScope, type ApiKeyContext } from "./keys";
@@ -133,6 +134,9 @@ export function toApiError(err: unknown): ApiError {
   if (err instanceof ForbiddenError) return ApiError.forbidden(err.message);
   if (err instanceof NotFoundError) return ApiError.notFound();
   if (err instanceof OrderValidationError) return ApiError.validation(err.details, err.message);
+  if (err instanceof IntakeValidationError) return ApiError.validation(undefined, err.message);
+  if (err instanceof IntakeRateLimitedError) return new ApiError(429, "rate_limited", err.message, undefined, err.retryAfterSec);
+  if (err instanceof IntakeRefusedError) return new ApiError(422, "intake_refused", err.message, { reason: err.reason });
   if (err instanceof TransitionError) {
     switch (err.code) {
       case "ORDER_NOT_FOUND":
@@ -141,6 +145,7 @@ export function toApiError(err: unknown): ApiError {
         return new ApiError(409, "illegal_transition", err.message, err.details);
       case "FORBIDDEN_ACTOR":
       case "NOT_ORDER_OWNER":
+      case "ORDER_LOCKED":
         return ApiError.forbidden(err.message);
       case "INVALID_PAYLOAD":
         return ApiError.validation(err.details, err.message);

@@ -13,7 +13,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { overrideAction, transitionAction, type ActionResult } from "@/app/[locale]/(app)/orders/actions";
-import { CANCEL_REASON_LABELS, RETURN_REASON_LABELS } from "@/lib/orders/statuses";
+import { CANCEL_REASON_LABELS, FAKE_REASON_LABELS, RETURN_REASON_LABELS } from "@/lib/orders/statuses";
 
 export interface TargetOption {
   to: OrderStatus;
@@ -181,8 +181,14 @@ function RuleFields({ ruleId, agents }: { ruleId: string; agents: Array<{ id: st
       );
     case "CONFIRM":
     case "CONFIRM_OUT_OF_STOCK":
+    case "CONFIRM_POSTPONED":
       return (
         <fieldset className="space-y-2 rounded-md border p-3" data-testid="checklist">
+          {ruleId === "CONFIRM_POSTPONED" ? (
+            <Field label={t("deliverOn")}>
+              <Input name="deliverOn" type="date" min={dateTimeMin.slice(0, 10)} required />
+            </Field>
+          ) : null}
           <legend className="px-1 text-sm font-medium">{t("checklist")}</legend>
           {(["productExplained", "totalStated", "addressVerified", "variantVerified", "explicitYes"] as const).map((k) => (
             <label key={k} className="flex items-center gap-2 text-sm">
@@ -194,7 +200,67 @@ function RuleFields({ ruleId, agents }: { ruleId: string; agents: Array<{ id: st
           </Field>
         </fieldset>
       );
+    case "RECONFIRM":
+    case "RECONFIRM_CANCEL":
+      return (
+        <>
+          <p className="text-sm text-muted-foreground">{t("reconfirmHint")}</p>
+          <Field label={t("proof")}>
+            <select name="proof" className={selectCls} defaultValue="DEVICE_LOG">
+              {(["DEVICE_LOG", "VOIP_LOG", "NONE"] as const).map((p) => (
+                <option key={p} value={p}>{tp(p)}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label={t("durationSec")}>
+            <Input name="durationSec" type="number" min={0} defaultValue={30} />
+          </Field>
+          {ruleId === "RECONFIRM_CANCEL" ? (
+            <>
+              <Field label={t("cancelReason")}>
+                <select name="cancelReason" className={selectCls} required defaultValue="">
+                  <option value="" disabled>—</option>
+                  {Object.entries(CANCEL_REASON_LABELS).map(([code, l]) => (
+                    <option key={code} value={code}>{l.fr} / {l.ar}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label={t("reasonNote")}>
+                <Textarea name="reasonNote" rows={2} />
+              </Field>
+            </>
+          ) : null}
+        </>
+      );
+    case "SHIPPING_DELAYED":
+      return (
+        <>
+          <Field label={t("reason")}>
+            <Input name="reason" defaultValue="stuck" />
+          </Field>
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox name="releaseStock" value="1" /> {t("releaseStock")}
+          </label>
+        </>
+      );
+    case "PARCEL_CREATED":
+      return (
+        <Field label={t("trackingNumber")}>
+          <Input name="trackingNumber" dir="ltr" />
+        </Field>
+      );
+    case "RECYCLE":
+      return (
+        <Field label={t("assignedToId")}>
+          <select name="assignedToId" className={selectCls} required defaultValue={agents[0]?.id ?? ""}>
+            {agents.map((a) => (
+              <option key={a.id} value={a.id}>{a.name}</option>
+            ))}
+          </select>
+        </Field>
+      );
     case "CANCEL":
+    case "DELAYED_CANCELLED":
       return (
         <>
           <Field label={t("cancelReason")}>
@@ -237,6 +303,14 @@ function RuleFields({ ruleId, agents }: { ruleId: string; agents: Array<{ id: st
     case "FAKE_ORDER":
       return (
         <>
+          <Field label={t("fakeReason")}>
+            <select name="fakeReason" className={selectCls} required defaultValue="">
+              <option value="" disabled>—</option>
+              {Object.entries(FAKE_REASON_LABELS).map(([code, l]) => (
+                <option key={code} value={code}>{l.fr} / {l.ar}</option>
+              ))}
+            </select>
+          </Field>
           <Field label={t("note")}>
             <Textarea name="note" rows={2} />
           </Field>
@@ -331,9 +405,21 @@ export function buildPayload(ruleId: string, fd: FormData): Record<string, unkno
           note: str("callNote"),
         },
       };
+    case "RECONFIRM":
+      return { call: { outcome: "ANSWERED", proof: str("proof"), durationSec: num("durationSec") } };
+    case "RECONFIRM_CANCEL":
+      return { call: { outcome: "ANSWERED", proof: str("proof"), durationSec: num("durationSec") }, cancelReason: str("cancelReason"), reasonNote: str("reasonNote") };
+    case "SHIPPING_DELAYED":
+      return { reason: str("reason") ?? "stuck", releaseStock: bool("releaseStock") };
+    case "PARCEL_CREATED":
+      return { trackingNumber: str("trackingNumber") };
+    case "RECYCLE":
+      return { assignedToId: str("assignedToId"), rule: "MANUAL_RECYCLE" };
+    case "CONFIRM_POSTPONED":
     case "CONFIRM":
     case "CONFIRM_OUT_OF_STOCK":
       return {
+        ...(ruleId === "CONFIRM_POSTPONED" ? { deliverOn: str("deliverOn") ? new Date(`${str("deliverOn")}T10:00:00`).toISOString() : undefined } : {}),
         checklist: {
           productExplained: bool("productExplained"),
           totalStated: bool("totalStated"),
@@ -344,6 +430,7 @@ export function buildPayload(ruleId: string, fd: FormData): Record<string, unkno
         note: str("note"),
       };
     case "CANCEL":
+    case "DELAYED_CANCELLED":
       return { cancelReason: str("cancelReason"), reasonNote: str("reasonNote") };
     case "POSTPONE":
       return { postponedUntil: str("postponedUntil") ? new Date(String(str("postponedUntil"))).toISOString() : undefined, reason: str("reason") };
@@ -353,7 +440,7 @@ export function buildPayload(ruleId: string, fd: FormData): Record<string, unkno
     case "DUPLICATE_REOPEN":
       return { verificationNote: str("verificationNote") };
     case "FAKE_ORDER":
-      return { note: str("note"), blacklistRequest: bool("blacklistRequest") };
+      return { fakeReason: str("fakeReason"), note: str("note"), blacklistRequest: bool("blacklistRequest") };
     case "SHIPPED":
       return { trackingNumber: str("trackingNumber") };
     case "RETURN_RECEIVED":

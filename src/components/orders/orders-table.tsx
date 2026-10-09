@@ -72,7 +72,11 @@ export function OrdersTable({ rows, locale, timezone, canBulk, agents, exportHre
         header: t("columns.customer"),
         cell: ({ row }) => (
           <div className="min-w-36">
-            <div className="font-medium">{row.original.customerName ?? "—"}</div>
+            <div className="flex items-center gap-1 font-medium">
+              {row.original.customerName ?? "—"}
+              {row.original.isRepeatCustomer ? <span className="rounded bg-violet-100 px-1 text-[10px] text-violet-900 dark:bg-violet-950 dark:text-violet-200" title={t("repeatBadge")}>↻</span> : null}
+              {row.original.mappingErrors.length > 0 ? <span className="rounded bg-amber-100 px-1 text-[10px] text-amber-900" title={row.original.mappingErrors.join(", ")}>!</span> : null}
+            </div>
             <div className="font-mono text-xs text-muted-foreground" dir="ltr">
               {row.original.customerPhone}
             </div>
@@ -91,8 +95,17 @@ export function OrdersTable({ rows, locale, timezone, canBulk, agents, exportHre
         ),
       },
       { accessorKey: "total", header: t("columns.total"), cell: ({ getValue }) => <span className="whitespace-nowrap font-medium">{formatDzd(getValue<number>(), locale)}</span> },
-      { accessorKey: "status", header: t("columns.status"), cell: ({ row }) => <StatusBadge status={row.original.status} locale={locale} /> },
-      { accessorKey: "attemptCount", header: t("columns.attempts"), cell: ({ getValue }) => <span className="font-mono text-xs">{getValue<number>()}/9</span> },
+      {
+        accessorKey: "status",
+        header: t("columns.status"),
+        // attempt count next to the status, e.g. "مكالمة 2 · 5" (section 19c.1)
+        cell: ({ row }) => (
+          <span className="inline-flex items-center gap-1 whitespace-nowrap">
+            <StatusBadge status={row.original.status} locale={locale} />
+            {row.original.attemptCount > 0 ? <span className="font-mono text-xs text-muted-foreground" data-testid="attempt-count">· {row.original.attemptCount}</span> : null}
+          </span>
+        ),
+      },
       { accessorKey: "assignedTo", header: t("columns.agent"), cell: ({ getValue }) => <span className="text-xs">{getValue<string | null>() ?? "—"}</span> },
       { accessorKey: "store", header: t("columns.store"), cell: ({ getValue }) => <span className="text-xs text-muted-foreground">{getValue<string>()}</span> },
       {
@@ -132,6 +145,11 @@ export function OrdersTable({ rows, locale, timezone, canBulk, agents, exportHre
           <Button variant="outline" size="sm" asChild>
             <a href={selectedIds.length ? `${exportHref}&ids=${selectedIds.join(",")}` : exportHref} data-testid="export-csv">
               <Download className="size-4" /> {t("bulk.exportCsv")}
+            </a>
+          </Button>
+          <Button variant="outline" size="sm" asChild>
+            <a href={`${selectedIds.length ? `${exportHref}&ids=${selectedIds.join(",")}` : exportHref}&format=xls`} data-testid="export-xls">
+              <Download className="size-4" /> {t("exportExcel")}
             </a>
           </Button>
           {message ? <span className="text-emerald-700">{message}</span> : null}

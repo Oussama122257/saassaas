@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { ALL_STATUSES, CONFIRMATION_STATUSES, FINISHED_PARCEL_STATUSES, STATUS_META, statusGroupOf, statusLabel, statusesInGroup } from "@/lib/orders/statuses";
 
 describe("status dictionary", () => {
-  it("has 30 fixed codes with FR and AR labels", () => {
-    expect(ALL_STATUSES).toHaveLength(30);
+  it("has 37 fixed codes with FR and AR labels", () => {
+    expect(ALL_STATUSES).toHaveLength(37);
     for (const code of ALL_STATUSES) {
       const m = STATUS_META[code];
       expect(m.code).toBe(code);
@@ -13,9 +13,10 @@ describe("status dictionary", () => {
   });
 
   it("groups match the spec", () => {
-    expect(statusesInGroup("CONFIRMATION")).toHaveLength(14);
-    expect(statusesInGroup("SHIPPING")).toEqual(["PRET_A_EXPEDIER", "EXPEDIE"]);
-    expect(statusesInGroup("DELIVERY")).toHaveLength(10);
+    expect(statusesInGroup("CONFIRMATION")).toHaveLength(17);
+    expect(statusesInGroup("SHIPPING")).toEqual(["EN_PREPARATION", "PRET_A_EXPEDIER", "EXPEDITION_RETARDEE", "EXPEDIE"]);
+    expect(statusesInGroup("DELIVERY")).toHaveLength(12);
+    expect(STATUS_META.EXPIREE.setBy).toEqual(["SYSTEM"]);
     expect(statusesInGroup("RETURN")).toEqual(["RETOUR_EN_COURS", "RETOUR_RECU", "PERDU_ENDOMMAGE"]);
     expect(statusesInGroup("CLOSED")).toEqual(["ENCAISSE"]);
     expect(statusGroupOf("LIVRE")).toBe("DELIVERY");

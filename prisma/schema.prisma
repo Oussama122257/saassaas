@@ -1,4 +1,4 @@
-// COD Call Center Platform — Prisma schema (phase 1)
+// COD Call Center Platform — Prisma schema
 // Money is stored in DZD as integers (dinars, no decimals).
 // All tenant data hangs off Organization: MERCHANT orgs own stores/orders/customers,
 // AGENCY orgs own users/pods and work merchants' orders through a ServiceContract.
@@ -86,11 +86,13 @@ enum OrderStatus {
   // confirmation
   NOUVEAU
   ASSIGNEE
+  EN_COURS_CONFIRMATION
   APPEL_1
   APPEL_2
   APPEL_3
   REPORTE
   A_VERIFIER
+  CONFIRMEE_REPORTEE
   CONFIRMEE
   CONFIRMEE_BOT
   CONFIRMEE_RUPTURE
@@ -98,14 +100,19 @@ enum OrderStatus {
   DOUBLE
   FAUSSE_COMMANDE
   INJOIGNABLE
+  EXPIREE
   // shipping
+  EN_PREPARATION
   PRET_A_EXPEDIER
+  EXPEDITION_RETARDEE
   EXPEDIE
   // delivery
   ARRIVE_WILAYA
   STOP_DESK
   EN_LIVRAISON
   CLIENT_INJOIGNABLE_LIVREUR
+  STOPDESK_SANS_REPONSE
+  EXPEDIE_REPORTE
   REPORTE_CLIENT
   ADRESSE_ERRONEE
   TENTATIVE_ECHOUEE
@@ -129,6 +136,21 @@ enum CancelReason {
   WRONG_PRODUCT_OR_SIZE
   DELIVERY_TOO_SLOW
   DID_NOT_ORDER
+  CANCELLED_BY_CUSTOMER
+  WRONG_INFORMATION
+  NO_LONGER_INTERESTED
+  CUSTOMER_ABSENT
+  OTHER
+}
+
+enum FakeReason {
+  INVALID_PHONE
+  NAME_NONSENSE
+  DID_NOT_ORDER
+  PRANK
+  TEST_ORDER
+  COMPETITOR
+  REPEAT_REFUSER
   OTHER
 }
 
@@ -242,6 +264,10 @@ model Organization {
   auditLogs           AuditLog[]
   statusLabels        StatusLabelOverride[]
   shifts              Shift[]
+  teams               Team[]
+  skuMappings         SkuMapping[]
+  intakeWindows       IntakeIpWindow[]
+  userPermissions     UserPermission[]
 }
 
 model User {
@@ -259,33 +285,38 @@ model User {
   updatedAt       DateTime  @updatedAt
 
   memberships       Membership[]
-  assignedOrders    Order[]         @relation("AssignedOrders")
-  confirmedOrders   Order[]         @relation("ConfirmedOrders")
+  assignedOrders    Order[]          @relation("AssignedOrders")
+  confirmedOrders   Order[]          @relation("ConfirmedOrders")
   calls             CallAttempt[]
   orderEvents       OrderEvent[]
   qaReviews         QaReview[]
-  warningsReceived  Warning[]       @relation("WarningsReceived")
-  warningsIssued    Warning[]       @relation("WarningsIssued")
+  warningsReceived  Warning[]        @relation("WarningsReceived")
+  warningsIssued    Warning[]        @relation("WarningsIssued")
   blacklistApproved Blacklist[]
   tasks             Task[]
   shifts            Shift[]
   stockMovements    StockMovement[]
-  podsFollowedUp    Pod[]           @relation("PodFollowUp")
+  podsFollowedUp    Pod[]            @relation("PodFollowUp")
   auditLogs         AuditLog[]
   apiKeysCreated    ApiKey[]
+  lockedOrders      Order[]          @relation("LockedOrders")
+  comments          Comment[]
+  permissions       UserPermission[]
 }
 
 model Membership {
-  id           String       @id @default(cuid())
-  userId       String
-  orgId        String
-  role         Role
+  id             String       @id @default(cuid())
+  userId         String
+  orgId          String
+  role           Role
   /// agents belong to one pod
-  podId        String?
-  active       Boolean      @default(true)
-  availability Availability @default(OFFLINE)
-  createdAt    DateTime     @default(now())
-  updatedAt    DateTime     @updatedAt
+  podId          String?
+  active         Boolean      @default(true)
+  availability   Availability @default(OFFLINE)
+  /// round-robin tie-break for the assignment engine
+  lastAssignedAt DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
 
   user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
@@ -326,12 +357,14 @@ model Pod {
   orgId          String
   name           String
   followUpUserId String?
+  teamId         String?
   active         Boolean  @default(true)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
   org          Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
   followUpUser User?         @relation("PodFollowUp", fields: [followUpUserId], references: [id])
+  team         Team?         @relation(fields: [teamId], references: [id])
   members      Membership[]
   merchants    PodMerchant[]
   orders       Order[]
@@ -366,23 +399,34 @@ model Plan {
 // ─────────────────────────────── Catalog ───────────────────────────────
 
 model Store {
-  id            String   @id @default(cuid())
+  id            String    @id @default(cuid())
   merchantId    String
   name          String
   channel       Channel
   /// encrypted at rest (AES-256-GCM, see src/lib/crypto.ts)
   credentials   String?
   webhookSecret String?
-  /// per-store field mapping for COD form apps (phase 2)
+  /// per-store field mapping for COD form apps (source path → our field), section 12.5 / 19c.5
   fieldMapping  Json?
-  active        Boolean  @default(true)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  /// Shopify shop domain, DZBuild store id, Google Sheet id, …
+  externalRef   String?
+  /// CONNECTED | DISCONNECTED | ERROR
+  connection    String    @default("CONNECTED")
+  /// per-store toggles: write-back, cancel in source, IP limit, blacklist mode …
+  settings      Json      @default("{}")
+  lastSyncAt    DateTime?
+  lastError     String?
+  active        Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
-  merchant Organization @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  orders   Order[]
+  merchant    Organization     @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  orders      Order[]
+  webhooks    WebhookReceipt[]
+  skuMappings SkuMapping[]
 
   @@index([merchantId])
+  @@index([channel, externalRef])
 }
 
 model Product {
@@ -481,66 +525,91 @@ model Blacklist {
 // ─────────────────────────────── Orders ───────────────────────────────
 
 model Order {
-  id                String        @id @default(cuid())
-  merchantId        String
-  storeId           String
+  id                    String        @id @default(cuid())
+  merchantId            String
+  storeId               String
   /// per-merchant sequence number shown to humans
-  seq               Int
+  seq                   Int
   /// id in Shopify / DZBuild / sheet row etc.
-  externalId        String?
-  customerId        String
+  externalId            String?
+  /// human name in the source platform (Shopify "#1234")
+  externalName          String?
+  customerId            String
   /// snapshot of the customer at order time (search + history)
-  customerName      String?
-  customerPhone     String
-  customerPhone2    String?
-  status            OrderStatus   @default(NOUVEAU)
-  statusGroup       StatusGroup   @default(CONFIRMATION)
+  customerName          String?
+  customerPhone         String
+  customerPhone2        String?
+  status                OrderStatus   @default(NOUVEAU)
+  statusGroup           StatusGroup   @default(CONFIRMATION)
   /// 1..58
-  wilayaCode        Int
-  commune           String?
-  address           String?
+  wilayaCode            Int
+  commune               String?
+  address               String?
   /// نقطة دالة
-  landmark          String?
-  deliveryType      DeliveryType  @default(HOME)
-  subtotal          Int
-  shippingFee       Int           @default(0)
+  landmark              String?
+  deliveryType          DeliveryType  @default(HOME)
+  subtotal              Int
+  shippingFee           Int           @default(0)
   /// what the customer pays at the door
-  total             Int
+  total                 Int
   /// utm / campaign / ad id
-  source            String?
-  note              String?
+  source                String?
+  note                  String?
   /// current owner (confirmation or follow-up agent)
-  assignedToId      String?
+  assignedToId          String?
   /// who confirmed — used for delivery-rate per agent
-  confirmedById     String?
-  podId             String?
+  confirmedById         String?
+  podId                 String?
   /// 0..9
-  attemptCount      Int           @default(0)
+  attemptCount          Int           @default(0)
   /// 0..3
-  attemptDay        Int           @default(0)
+  attemptDay            Int           @default(0)
   /// scheduler pointer (callback, postponed date, next attempt)
-  nextActionAt      DateTime?
-  postponedUntil    DateTime?
-  cancelReason      CancelReason?
-  returnReason      ReturnReason?
-  reasonNote        String?
-  courierId         String?
-  trackingNumber    String?
-  labelUrl          String?
-  lastSendFailure   String?
-  lastCourierSyncAt DateTime?
-  shippedAt         DateTime?
-  deliveredAt       DateTime?
-  returnedAt        DateTime?
-  cashCollectedAt   DateTime?
-  confirmedAt       DateTime?
+  nextActionAt          DateTime?
+  postponedUntil        DateTime?
+  cancelReason          CancelReason?
+  returnReason          ReturnReason?
+  reasonNote            String?
+  courierId             String?
+  trackingNumber        String?
+  labelUrl              String?
+  lastSendFailure       String?
+  lastCourierSyncAt     DateTime?
+  shippedAt             DateTime?
+  deliveredAt           DateTime?
+  returnedAt            DateTime?
+  cashCollectedAt       DateTime?
+  confirmedAt           DateTime?
   /// last time a human or the system touched the order (used by the 30-min reassignment rule)
-  lastActivityAt    DateTime      @default(now())
-  duplicateOfId     String?
+  lastActivityAt        DateTime      @default(now())
+  duplicateOfId         String?
+  /// claim/lock (section 19c.2): the agent who opened the order; others cannot act until released
+  lockedById            String?
+  lockedAt              DateTime?
+  /// status to return to when the lock times out
+  lockPrevStatus        OrderStatus?
+  /// 0 = first round; 1 = recycled once (section 19c.2)
+  recycleRound          Int           @default(0)
+  expiredAt             DateTime?
+  lastAttemptAt         DateTime?
+  /// DZD added by upsell / cross-sell during the confirmation call (section 19c.8)
+  upsellValue           Int           @default(0)
+  crossSellValue        Int           @default(0)
+  fakeReason            FakeReason?
+  /// intake problems (ADDRESS_MAPPING, UNMATCHED_SKU, INVALID_PHONE, …) — section 19c.4
+  mappingErrors         String[]
+  isRepeatCustomer      Boolean       @default(false)
+  freeDelivery          Boolean       @default(false)
+  abandonedCartRecovery Boolean       @default(false)
+  address2              String?
+  /// IP of the buyer for public intake (anti-fraud)
+  clientIp              String?
+  /// soft delete (merchant area)
+  deletedAt             DateTime?
   /// e.g. HIGH_VALUE, REPEAT_REFUSER, BOT_CONFIRMED, MANUAL_PROOF
-  flags             String[]
-  createdAt         DateTime      @default(now())
-  updatedAt         DateTime      @updatedAt
+  flags                 String[]
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
 
   merchant    Organization @relation("MerchantOrders", fields: [merchantId], references: [id], onDelete: Cascade)
   store       Store        @relation(fields: [storeId], references: [id])
@@ -559,6 +628,9 @@ model Order {
   tasks          Task[]
   messages       MessageLog[]
   stockMovements StockMovement[]
+  comments       Comment[]
+  unmatchedLines UnmatchedLine[]
+  lockedBy       User?           @relation("LockedOrders", fields: [lockedById], references: [id])
 
   @@unique([merchantId, seq])
   @@unique([storeId, externalId])
@@ -569,6 +641,8 @@ model Order {
   @@index([customerId])
   @@index([customerPhone])
   @@index([trackingNumber])
+  @@index([status, lockedAt])
+  @@index([merchantId, deletedAt])
 }
 
 model OrderItem {
@@ -613,8 +687,10 @@ model CallAttempt {
   agentId       String
   /// which outbound number (A/B/C)
   phoneNumberId String?
-  /// 1..9
+  /// 1..9 within the round
   attemptNo     Int
+  /// recycle round the attempt belongs to (0 = first)
+  round         Int         @default(0)
   /// 1..3
   day           Int
   slot          CallSlot
@@ -1016,4 +1092,125 @@ model StatusLabelOverride {
   merchant Organization @relation(fields: [merchantId], references: [id], onDelete: Cascade)
 
   @@unique([merchantId, code])
+}
+
+// ─────────────────────────────── Phase 2: confirmation engine ───────────────────────────────
+
+/// Structured comments at every stage (section 19c.6).
+model Comment {
+  id        String      @id @default(cuid())
+  orderId   String
+  authorId  String
+  stage     StatusGroup
+  /// NRP | SMS_ENVOYE | COULEUR_TAILLE | LIVREUR | SUIVI | ADRESSE | PRIX | RAPPEL
+  tags      String[]
+  body      String
+  createdAt DateTime    @default(now())
+
+  order  Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  author User  @relation(fields: [authorId], references: [id])
+
+  @@index([orderId, createdAt])
+  @@index([authorId, createdAt])
+}
+
+/// Order lines whose SKU is not in the catalog (section 19c.4).
+model UnmatchedLine {
+  id                String  @id @default(cuid())
+  orderId           String
+  externalSku       String
+  productName       String
+  variantName       String?
+  qty               Int     @default(1)
+  unitPrice         Int     @default(0)
+  resolvedProductId String?
+  resolvedVariantId String?
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([externalSku])
+}
+
+/// SKU / product-name mapping learned once and auto-applied to later orders.
+model SkuMapping {
+  id          String   @id @default(cuid())
+  merchantId  String
+  storeId     String?
+  externalSku String
+  productId   String
+  variantId   String?
+  createdAt   DateTime @default(now())
+
+  merchant Organization @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  store    Store?       @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@unique([merchantId, externalSku])
+}
+
+/// Inbound webhook log (Shopify, DZBuild, couriers, WhatsApp). Used for idempotency, preview and replay.
+model WebhookReceipt {
+  id         String   @id @default(cuid())
+  provider   String
+  storeId    String?
+  topic      String
+  /// provider delivery id (X-Shopify-Webhook-Id, …) or body hash
+  deliveryId String
+  verified   Boolean  @default(false)
+  status     String   @default("RECEIVED")
+  error      String?
+  payload    Json     @default("{}")
+  orderId    String?
+  receivedAt DateTime @default(now())
+
+  store Store? @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, deliveryId])
+  @@index([storeId, receivedAt])
+}
+
+/// Fixed-window counter for "max N orders per IP in H hours" (section 19b.4).
+model IntakeIpWindow {
+  id          String   @id @default(cuid())
+  merchantId  String
+  ip          String
+  windowStart DateTime
+  count       Int      @default(0)
+
+  merchant Organization @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@unique([merchantId, ip, windowStart])
+}
+
+/// Last run of periodic system jobs (nightly expiry, recycle, hourly watchdog…) per org.
+model JobRun {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  lastRunAt DateTime
+  result    Json     @default("{}")
+}
+
+/// Teams above pods (section 19c.10).
+model Team {
+  id        String   @id @default(cuid())
+  orgId     String
+  name      String
+  createdAt DateTime @default(now())
+
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  pods Pod[]
+
+  @@index([orgId])
+}
+
+/// Granular permissions (section 19c.10): OVERRIDE_DELIVERY_STATUS | RESET_TO_QUEUE | DELETE_ORDER | EXPORT
+model UserPermission {
+  userId String
+  orgId  String
+  key    String
+
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@id([userId, orgId, key])
 }
