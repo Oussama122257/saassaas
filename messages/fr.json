@@ -51,7 +51,9 @@
     "portal": "Portail client",
     "stores": "Boutiques",
     "newOrder": "Nouvelle commande",
-    "unmatched": "Produits non reconnus"
+    "unmatched": "Produits non reconnus",
+    "devices": "Téléphones",
+    "messaging": "Messages"
   },
   "roles": {
     "PLATFORM_ADMIN": "Admin plateforme",
@@ -311,7 +313,8 @@
       "PRECONDITION_FAILED": "Condition non remplie : {detail}",
       "FORBIDDEN": "Action non autorisée.",
       "UNKNOWN": "Erreur inattendue.",
-      "ORDER_LOCKED": "Un autre agent travaille sur cette commande."
+      "ORDER_LOCKED": "Un autre agent travaille sur cette commande.",
+      "CALL_PROOF_PENDING": "Preuve d'appel pas encore reçue : {detail}"
     }
   },
   "audit": {
@@ -393,6 +396,10 @@
     "operations": {
       "title": "Règles opérationnelles",
       "description": "Créneaux d'appel, délais, attribution, anti-fraude, numéros A/B/C."
+    },
+    "messaging": {
+      "title": "Messages et téléphonie",
+      "description": "Modèles WhatsApp/SMS, confirmation par bot, crédits, preuve d'appel."
     }
   },
   "errors": {
@@ -485,7 +492,9 @@
     "stock": "Stock disponible : {n}",
     "done": "Enregistré",
     "backToQueue": "Retour à la file",
-    "mappingErrors": "Problèmes à l'intake"
+    "mappingErrors": "Problèmes à l'intake",
+    "proofReceived": "Preuve reçue ({source}) : {duration} s — résultat suggéré : {outcome}",
+    "proofWaiting": "Appel en cours… en attente du journal d'appel du téléphone."
   },
   "comments": {
     "tags": {
@@ -683,5 +692,55 @@
     "title": "Produits non reconnus",
     "subtitle": "{count} commande(s) avec un SKU inconnu. Rattachez chaque SKU une fois : il sera appliqué automatiquement ensuite.",
     "empty": "Rien à rattacher."
+  },
+  "devices": {
+    "title": "Téléphones (application Android)",
+    "subtitle": "L'application compagnon lance les appels depuis la SIM et renvoie le journal d'appel : c'est la preuve de chaque tentative.",
+    "none": "Aucun téléphone appairé.",
+    "lastSeen": "vu",
+    "revoke": "Révoquer",
+    "namePlaceholder": "Nom du téléphone (ex. Samsung A14 – Amine)",
+    "pair": "Appairer un téléphone",
+    "shownOnce": "Collez cette configuration dans l'application (affichée une seule fois) :",
+    "how1": "1. Installez l'application compagnon sur le téléphone de l'agent et collez la configuration.",
+    "how2": "2. Sur l'écran d'appel, le bouton « Appeler » ouvre l'application qui compose depuis la SIM.",
+    "how3": "3. Après l'appel, l'application envoie le journal (numéro, heure, durée) : la tentative est enregistrée avec la preuve DEVICE_LOG."
+  },
+  "messaging": {
+    "title": "Messages et téléphonie",
+    "subtitle": "Messages automatiques par événement (un seul message par événement), heures silencieuses, crédits prépayés.",
+    "noMerchant": "Aucun marchand accessible.",
+    "automation": "Automatisations",
+    "balance": "{n} crédits",
+    "botConfirmation": "Demander la confirmation par bouton WhatsApp à chaque nouvelle commande",
+    "language": "Langue des messages",
+    "enabledTemplates": "Messages envoyés automatiquement",
+    "save": "Enregistrer",
+    "saved": "Enregistré",
+    "topUp": "Crédits à ajouter",
+    "credit": "Créditer",
+    "telephony": "Preuve d'appel",
+    "modeDevice": "Application Android (journal d'appel de la SIM)",
+    "modeVoip": "Fournisseur VoIP (CDR)",
+    "modeManual": "Manuel (sans preuve, signalé)",
+    "templates": "Modèles",
+    "variables": "Variables : '{customer_name}' '{product}' '{total}' '{wilaya}' '{courier_phone}' '{store_name}' '{tracking_url}' '{desk_address}'. Vide = modèle par défaut.",
+    "waTemplate": "Nom du modèle WhatsApp approuvé (Meta)",
+    "saveTemplate": "Enregistrer le modèle",
+    "ledger": "Mouvements de crédits",
+    "log": "Derniers messages",
+    "template": "Modèle",
+    "channel": "Canal",
+    "status": "Statut",
+    "date": "Date"
+  },
+  "tracking": {
+    "title": "Commande n° {seq}",
+    "hello": "Bonjour {name} !",
+    "current": "Statut actuel",
+    "amount": "Montant à préparer à la livraison",
+    "courier": "Transporteur",
+    "stopDesk": "Retrait au bureau",
+    "home": "Livraison à domicile"
   }
 }

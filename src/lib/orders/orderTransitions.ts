@@ -1239,7 +1239,7 @@ export async function createOrder(ctx: ActorContext, input: CreateOrderInput): P
     from: null,
     to: created.order.status,
     actorId: ctx.kind === "user" ? ctx.userId : null,
-    sideEffects: created.order.status === "NOUVEAU" ? ["AUTO_ASSIGN"] : [],
+    sideEffects: created.order.status === "NOUVEAU" ? ["AUTO_ASSIGN", "BOT_CONFIRM_REQUEST"] : [],
     payload: { ruleId: "CREATE" },
   });
   return created.order;

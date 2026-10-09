@@ -11,6 +11,8 @@ import { isOrderStatus } from "@/lib/orders/statuses";
 import { resolveUnmatchedLine } from "@/lib/ingest/pipeline";
 import { releaseAgentOrders } from "@/lib/assign/rules";
 import { ForbiddenError, orderAccessWhere } from "@/lib/tenant";
+import { linkSessionToAttempt, pendingSession, proofOf, startCall } from "@/lib/calls/proof";
+import { loadOpsContext } from "@/lib/orders/orderTransitions";
 
 export type QueueActionResult = { ok: true; next?: string | null; message?: string } | { ok: false; code: string; message: string; detail?: string };
 
@@ -35,29 +37,63 @@ export async function nextOrderAction(): Promise<QueueActionResult & { kind?: st
   }
 }
 
-/** Log the attempt just made from the call screen (APPEL_n derived from the counter). */
+/** Click-to-call: opens a call session (telephony adapter) and returns what the device must open. */
+export async function startCallAction(input: { orderId: string }): Promise<QueueActionResult & { dialUri?: string | null; callRef?: string; numberLabel?: string | null }> {
+  const ctx = await getCurrentContext();
+  if (!ctx) return { ok: false, code: "FORBIDDEN", message: "Not signed in" };
+  try {
+    const r = await startCall(ctx, input.orderId);
+    return { ok: true, ...r };
+  } catch (err) {
+    return fail(err);
+  }
+}
+
+/** Has the device log / CDR of the current call arrived? */
+export async function callProofStatusAction(input: { orderId: string }): Promise<{ hasSession: boolean; proof: string | null; durationSec: number | null; suggestedOutcome: string | null }> {
+  const ctx = await getCurrentContext();
+  if (!ctx) return { hasSession: false, proof: null, durationSec: null, suggestedOutcome: null };
+  const s = await pendingSession(input.orderId, ctx.userId);
+  const p = s ? proofOf(s) : null;
+  return { hasSession: !!s, proof: p?.proof ?? null, durationSec: p?.durationSec ?? null, suggestedOutcome: p?.suggestedOutcome ?? null };
+}
+
+/**
+ * Log the attempt just made from the call screen (APPEL_n derived from the counter). The proof
+ * comes from the call session (device log / VoIP CDR); without proof the attempt is rejected unless
+ * the org enabled manual mode, where it is logged as NONE and flagged MANUAL_PROOF.
+ */
 export async function logAttemptAction(input: { orderId: string; outcome: string; durationSec?: number; callbackAt?: string; note?: string; phoneNumberId?: string }): Promise<QueueActionResult> {
   const ctx = await getCurrentContext();
   if (!ctx) return { ok: false, code: "FORBIDDEN", message: "Not signed in" };
   try {
-    const order = await prisma.order.findFirst({ where: { AND: [{ id: input.orderId }, orderAccessWhere(ctx)] }, select: { attemptCount: true } });
+    const order = await prisma.order.findFirst({ where: { AND: [{ id: input.orderId }, orderAccessWhere(ctx)] } });
     if (!order) return { ok: false, code: "ORDER_NOT_FOUND", message: "Order not found" };
-    await transitionOrder(ctx, {
+    const session = await pendingSession(order.id, ctx.userId);
+    const proof = session ? proofOf(session) : null;
+    if (!proof) {
+      const ops = await loadOpsContext(prisma, order);
+      const manual = ops.settings.manualCallProof || ops.settings.telephony.mode === "MANUAL" || process.env.ALLOW_MANUAL_CALL_PROOF === "1";
+      if (!manual) return { ok: false, code: "CALL_PROOF_PENDING", message: session ? "Waiting for the call log from the phone" : "Start the call from the platform first" };
+    }
+    const r = await transitionOrder(ctx, {
       orderId: input.orderId,
       to: nextAttemptStatus(order.attemptCount),
       payload: {
         call: {
           outcome: input.outcome,
-          // Phase 2: manual entry (flagged MANUAL_PROOF). Phase 3 replaces this with the telephony
-          // adapter: the device / VoIP log arrives through /api/v1/calls and carries the proof.
-          proof: "NONE",
-          durationSec: input.durationSec,
+          proof: proof?.proof ?? "NONE",
+          startedAt: proof?.startedAt,
+          durationSec: proof ? proof.durationSec : input.durationSec,
+          recordingUrl: proof?.recordingUrl ?? undefined,
           callbackAt: input.callbackAt ? new Date(input.callbackAt).toISOString() : undefined,
           note: input.note,
-          phoneNumberId: input.phoneNumberId,
+          phoneNumberId: proof?.phoneNumberId ?? input.phoneNumberId,
         },
       },
     });
+    const attemptId = (r.event.payload as { callAttemptId?: string }).callAttemptId;
+    if (session && attemptId) await linkSessionToAttempt(session.id, attemptId);
     revalidatePath(`/${ctx.locale}/queue/${input.orderId}`);
     return { ok: true };
   } catch (err) {

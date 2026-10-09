@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { getTranslations } from "next-intl/server";
-import { ClipboardList, LayoutDashboard, ScrollText, Settings, LogOut, PhoneCall, Users, PackageX } from "lucide-react";
+import { ClipboardList, LayoutDashboard, ScrollText, Settings, LogOut, PhoneCall, Users, PackageX, Smartphone } from "lucide-react";
 import { prisma } from "@/lib/db";
 import { AvailabilityToggle } from "./availability-toggle";
 import { Link } from "@/i18n/navigation";
@@ -21,6 +21,7 @@ export async function AppShell({ ctx, locale, children }: { ctx: TenantContext; 
     { href: "/queue", label: t("queue"), icon: PhoneCall, show: hasRole(ctx, ["CONFIRMATION_AGENT", "FOLLOWUP_AGENT"]) && !ctx.isPlatformAdmin },
     { href: "/orders", label: t("orders"), icon: ClipboardList, show: true },
     { href: "/team", label: t("team"), icon: Users, show: hasRole(ctx, ["ORG_OWNER", "SUPERVISOR"]) },
+    { href: "/devices", label: t("devices"), icon: Smartphone, show: hasRole(ctx, ["CONFIRMATION_AGENT", "FOLLOWUP_AGENT", "SUPERVISOR", "ORG_OWNER"]) },
     { href: "/unmatched", label: t("unmatched"), icon: PackageX, show: hasRole(ctx, ["ORG_OWNER", "SUPERVISOR"]) },
     { href: "/audit", label: t("audit"), icon: ScrollText, show: hasRole(ctx, SUPERVISOR_PLUS) },
     { href: "/settings", label: t("settings"), icon: Settings, show: hasRole(ctx, ["ORG_OWNER", "SUPERVISOR"]) },

@@ -8,6 +8,7 @@ import { resolveTenantContext, systemContext, type TenantContext } from "@/lib/t
 import { assignOrder, createOrder, proposeFakeOrder, transitionOrder } from "@/lib/orders/orderTransitions";
 import { addDays, addHours } from "@/lib/time";
 import { planAttempt } from "@/lib/calls/slots";
+import { topUpCredits } from "@/lib/messaging/credits";
 import { DEFAULT_ORG_SETTINGS } from "@/lib/settings";
 import { COMMUNES, FIRST_NAMES, LANDMARKS, LAST_NAMES, PRODUCTS, STATUS_DISTRIBUTION, WILAYA_WEIGHTS, type ProductSeed } from "./seed-data";
 
@@ -523,6 +524,16 @@ async function main() {
     if (detail?.cashCollectedAt) patch.cashCollectedAt = addHours(o.createdAt, 200);
     await prisma.order.update({ where: { id: o.id, merchantId: { not: "" } }, data: patch });
   }
+
+  // ─── messaging credits (section 19b.1) and bot confirmation on the SaaS client ───
+  for (const m of [storeA, storeB, saas]) await topUpCredits(m.id, 1000, { note: "seed" });
+  await prisma.organization.update({ where: { id: saas.id }, data: { settings: { messaging: { botConfirmation: true } } } });
+  // a paired demo device for agent1a (token printed below, local only)
+  await prisma.deviceToken.create({ data: { userId: users["agent1a@demo.local"]!.id, orgId: agency.id, name: "Demo Android", tokenHash: sha256Hex("dev_demo_agent1a") } });
+
+  // public tracking demo: /fr/t/demo-tracking-0001
+  const shippedDemo = await prisma.order.findFirst({ where: { status: "EN_LIVRAISON", merchantId: storeA.id } });
+  if (shippedDemo) await prisma.order.update({ where: { id: shippedDemo.id, merchantId: storeA.id }, data: { trackingToken: "demo-tracking-0001" } });
 
   const byStatus = await prisma.order.groupBy({ by: ["status"], _count: { _all: true }, where: { merchantId: { not: "" } } });
   console.log(`Seeded ${orders.length} orders, ${reviews} QA reviews.`);

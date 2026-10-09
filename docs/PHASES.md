@@ -51,3 +51,29 @@ auto-applied, confirmed-postponed re-queue + re-confirmation, `POST /v1/orders` 
 
 **Not in this phase:** call proof is entered manually from the call screen (`proof = NONE`,
 flagged `MANUAL_PROOF`); the telephony adapter and Android call-log sync arrive in phase 3.
+
+## Phase 3 — Call proof and messaging
+
+| Area | Where |
+|---|---|
+| Telephony adapter interface (section 8.3): `DeviceTelephonyAdapter` (Android companion deep link), `MockVoipAdapter` (tel: + CDR webhook), `PendingVoipAdapter` (owner to choose provider) | `src/lib/adapters/telephony/` |
+| Call sessions: click-to-call creates a `CallSession` (number rotation A→B→C); device logs / CDRs attach the proof; the agent's attempt carries it; proven calls without an outcome are auto-logged after 10 min | `src/lib/calls/proof.ts`, scheduler tick |
+| Android companion API + pairing (device tokens, shown once) and its contract | `POST /api/v1/calls/device-log`, `/[locale]/devices`, `docs/android-companion.md` |
+| VoIP CDR webhook | `/api/webhooks/telephony/[provider]` |
+| Messaging adapters: WhatsApp Business Cloud API (templates, URL / quick-reply buttons), mock, SMS placeholder (owner to choose gateway) | `src/lib/adapters/messaging/` |
+| Send pipeline: one message per event per order, Algerian mobiles only, quiet hours → deferred, prepaid credits (refund on failure), SMS fallback, MessageLog + OrderEvent | `src/lib/messaging/send.ts`, `credits.ts` |
+| 10 bilingual default templates, per-merchant overrides (FR/AR × WhatsApp/SMS), approved WhatsApp template names | `src/lib/messaging/templates.ts`, `/settings/messaging` |
+| Automatic messages: missed_call_1 (first unanswered attempt only), written_confirmation, shipped, arrived_wilaya, stopdesk_info, delivery_day_amount, courier_trying_to_reach_you, injoignable_final, did_you_receive; bot_confirm_request on new orders (merchant toggle) | `src/worker/jobs/statusChanged.ts` |
+| WhatsApp webhook: verify handshake, X-Hub-Signature-256, delivery statuses, button reply → `CONFIRMEE_BOT` (reply must come from the customer's number; high-value / risky → verification task) | `/api/webhooks/whatsapp`, `src/lib/messaging/inbound.ts` |
+| Public tracking page and short links | `/[locale]/t/[token]`, `/s/[code]`, `src/lib/tracking.ts` |
+
+**Acceptance (section 20, phase 3)** — `tests/integration/phase3.test.ts`: missed-call message
+sent after the first failed attempt (and not after the second); bot reply sets `CONFIRMEE_BOT`;
+high-value bot orders create a verification task and cannot be packed until verified. Plus:
+unsigned / spoofed webhooks rejected, non-mobile skipped for free, no-credit refusal, SMS
+fallback with refund, quiet-hours deferral to 09:00, device-log and CDR proofs, tracking page and
+short link. E2E: tracking page FR/AR, credits page, device pairing.
+
+**Owner inputs still needed:** WhatsApp Business account (token, phone number id, app secret,
+approved template names), SMS gateway, VoIP provider if not using the Android companion. The
+companion app itself is a separate project; its API contract is in `docs/android-companion.md`.

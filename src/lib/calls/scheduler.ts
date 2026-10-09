@@ -7,6 +7,7 @@ import { systemContext } from "@/lib/tenant";
 import { parseOrgSettings } from "@/lib/settings";
 import { addDays, addHours, dateKeyInTz, startOfDayInTz } from "@/lib/time";
 import { enqueue } from "@/lib/queue";
+import { autoLogStaleSessions } from "./proof";
 
 /**
  * System jobs of the confirmation engine (sections 8.2, 9.2, 19c.2). Each job is idempotent and
@@ -266,6 +267,7 @@ export async function runConfirmationTick(now = new Date()): Promise<TickReport>
     report.untouched = await reassignUntouched(now);
     report.rotation = await rotateAgents(now);
     report.requeued = await requeueDue(now);
+    report.autoLogged = await autoLogStaleSessions(now);
     report.unreachable = await markUnreachable(now);
     report.expired = await nightlyExpiry(now);
     report.recycled = await recycleOrders(now);

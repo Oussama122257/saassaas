@@ -79,6 +79,28 @@ export const intakeSettingsSchema = z.object({
   duplicateWindowHours: z.number().int().min(1).default(48),
 });
 
+export const messagingSettingsSchema = z.object({
+  /** messages consume prepaid credits (section 19b.1) */
+  creditsEnforced: z.boolean().default(true),
+  costWhatsApp: z.number().int().min(0).default(1),
+  costSms: z.number().int().min(0).default(1),
+  /** send bot_confirm_request (WhatsApp "I confirm" button) to new orders */
+  botConfirmation: z.boolean().default(false),
+  /** customer-facing language */
+  language: z.enum(["ar", "fr"]).default("ar"),
+  /** templates that are sent automatically (others are skipped) */
+  disabledTemplates: z.array(z.string()).default([]),
+});
+
+export const telephonySettingsSchema = z.object({
+  /** DEVICE = Android companion syncs the SIM call log; VOIP = provider CDR webhook; MANUAL = no proof (flagged) */
+  mode: z.enum(["DEVICE", "VOIP", "MANUAL"]).default("DEVICE"),
+  /** VoIP provider key when mode = VOIP (owner to choose) */
+  provider: z.string().default("mock"),
+  /** a call with proof but no outcome from the agent is logged automatically after N minutes */
+  autoLogAfterMin: z.number().int().min(1).default(10),
+});
+
 export const orgSettingsSchema = z.object({
   minAnsweredCallSec: z.number().int().min(0).default(15),
   highValueThreshold: z.number().int().min(0).default(15000),
@@ -93,6 +115,8 @@ export const orgSettingsSchema = z.object({
   lifecycle: lifecycleSettingsSchema.default(lifecycleSettingsSchema.parse({})),
   assignment: assignmentSettingsSchema.default(assignmentSettingsSchema.parse({})),
   intake: intakeSettingsSchema.default(intakeSettingsSchema.parse({})),
+  messaging: messagingSettingsSchema.default(messagingSettingsSchema.parse({})),
+  telephony: telephonySettingsSchema.default(telephonySettingsSchema.parse({})),
 });
 
 export type OrgSettings = z.infer<typeof orgSettingsSchema>;
@@ -100,6 +124,7 @@ export type CallSettings = z.infer<typeof callSettingsSchema>;
 export type LifecycleSettings = z.infer<typeof lifecycleSettingsSchema>;
 export type AssignmentSettings = z.infer<typeof assignmentSettingsSchema>;
 export type IntakeSettings = z.infer<typeof intakeSettingsSchema>;
+export type MessagingSettings = z.infer<typeof messagingSettingsSchema>;
 
 export const DEFAULT_ORG_SETTINGS: OrgSettings = orgSettingsSchema.parse({});
 

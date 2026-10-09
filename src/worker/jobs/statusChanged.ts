@@ -51,8 +51,13 @@ const handlers: Record<SideEffect, (p: Payload) => Promise<void>> = {
   PRINT_LABEL: noop, // TODO(phase 4)
   NOTIFY_STOCK_BACK: (p) => sendTemplate(p, "written_confirmation"),
   SEND_SHIPPED_MESSAGE: (p) => sendTemplate(p, "shipped"),
-  DELIVERY_TASK: noop, // task created synchronously; messages in phase 3/4
-  DELIVERED_STATS: noop, // TODO(phase 5): daily aggregates + bonus credit
+  // section 10.1: customer message per courier status (tasks were created synchronously)
+  DELIVERY_TASK: async (p) => {
+    const map: Record<string, string> = { ARRIVE_WILAYA: "arrived_wilaya", STOP_DESK: "stopdesk_info", EN_LIVRAISON: "delivery_day_amount", CLIENT_INJOIGNABLE_LIVREUR: "courier_trying_to_reach_you" };
+    const tpl = map[p.to];
+    if (tpl) await sendTemplate(p, tpl, (p.payload.messageVars as Record<string, string> | undefined) ?? {});
+  },
+  DELIVERED_STATS: (p) => sendTemplate(p, "did_you_receive"), // aggregates are computed by the KPI layer (phase 5)
   LINK_RETURN_TO_AGENT: noop, // confirmedById recorded in the event payload
   RESTOCK: noop, // TODO(phase 4)
   RELEASE_STOCK: noop, // TODO(phase 4)
@@ -70,6 +75,11 @@ const handlers: Record<SideEffect, (p: Payload) => Promise<void>> = {
   QUEUE_REFRESH: noop,
   AUTO_ASSIGN: async (p) => {
     await autoAssignOrder(p.orderId);
+  },
+  BOT_CONFIRM_REQUEST: async (p) => {
+    const merchant = await withSystemContext("side-effects", () => prisma.organization.findUnique({ where: { id: p.merchantId }, select: { settings: true } }));
+    const settings = (merchant?.settings ?? {}) as { messaging?: { botConfirmation?: boolean } };
+    if (settings.messaging?.botConfirmation) await sendTemplate(p, "bot_confirm_request");
   },
 };
 

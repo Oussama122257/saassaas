@@ -20,7 +20,7 @@ import { wilayaName } from "@/lib/wilayas";
 import { cn, formatDateTime, formatDzd } from "@/lib/utils";
 import { CommentsPanel } from "@/components/orders/comments-panel";
 import { UnmatchedLines } from "@/components/orders/unmatched-lines";
-import { decisionAction, logAttemptAction, nextOrderAction, proposeFakeQueueAction, skipAction, type QueueActionResult } from "@/app/[locale]/(app)/queue/actions";
+import { callProofStatusAction, decisionAction, logAttemptAction, nextOrderAction, proposeFakeQueueAction, skipAction, startCallAction, type QueueActionResult } from "@/app/[locale]/(app)/queue/actions";
 
 const OUTCOMES = ["ANSWERED", "NO_ANSWER", "BUSY", "OFF", "WRONG_NUMBER", "CALLBACK_REQUESTED"] as const;
 const CHECKS = ["productExplained", "totalStated", "addressVerified", "variantVerified", "explicitYes"] as const;
@@ -48,6 +48,36 @@ export function CallScreen({ data, locale, userId }: { data: CallScreenData; loc
   const [upsellOn, setUpsellOn] = useState(false);
   const [upsell, setUpsell] = useState<{ kind: "UPSELL" | "CROSS_SELL"; productId: string; variantId: string; qty: number }>({ kind: "UPSELL", productId: order.items[0]?.productId ?? data.products[0]?.id ?? "", variantId: "", qty: 1 });
   const [seriousOpen, setSeriousOpen] = useState(false);
+  const [callActive, setCallActive] = useState(false);
+  const [proof, setProof] = useState<{ proof: string | null; durationSec: number | null; suggestedOutcome: string | null } | null>(null);
+
+  // poll for the device log / CDR of the call in progress (section 8.3)
+  useEffect(() => {
+    if (!callActive || proof?.proof) return;
+    const started = Date.now();
+    const id = window.setInterval(async () => {
+      const s = await callProofStatusAction({ orderId: order.id });
+      if (s.proof) {
+        setProof(s);
+        if (s.durationSec !== null) setDuration(s.durationSec);
+        window.clearInterval(id);
+      }
+      if (Date.now() - started > 10 * 60_000) window.clearInterval(id);
+    }, 4000);
+    return () => window.clearInterval(id);
+  }, [callActive, proof?.proof, order.id]);
+
+  const dial = () =>
+    start(async () => {
+      const r = await startCallAction({ orderId: order.id });
+      if (!r.ok) {
+        setError(r.message);
+        return;
+      }
+      setCallActive(true);
+      setProof(null);
+      if (r.dialUri) window.location.href = r.dialUri;
+    });
 
   const answered = order.calls.some((c) => c.outcome === "ANSWERED" && c.round === order.recycleRound);
   const allChecked = CHECKS.every((k) => checks[k]);
@@ -135,9 +165,10 @@ export function CallScreen({ data, locale, userId }: { data: CallScreenData; loc
             <CardContent className="space-y-3 text-sm">
               <div className="text-lg font-semibold">{order.customerName ?? "—"}</div>
               <div className="flex flex-wrap items-center gap-2">
-                <a href={`tel:${order.customerPhone}`} className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 font-mono text-lg text-primary-foreground" dir="ltr" data-testid="click-to-call">
+                <button type="button" onClick={dial} disabled={pending || !!data.blocked || !!lockedByOther} className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 font-mono text-lg text-primary-foreground disabled:opacity-60" dir="ltr" data-testid="click-to-call">
                   <Phone className="size-4" aria-hidden /> {formatPhone(order.customerPhone)}
-                </a>
+                </button>
+                <a href={`tel:${order.customerPhone}`} className="text-xs text-muted-foreground underline" dir="ltr">tel:</a>
                 <Button variant="ghost" size="icon" type="button" onClick={() => navigator.clipboard?.writeText(order.customerPhone)} aria-label="copy"><Copy className="size-4" /></Button>
               </div>
               {order.customerPhone2 ? <a href={`tel:${order.customerPhone2}`} className="block font-mono text-muted-foreground" dir="ltr">{formatPhone(order.customerPhone2)}</a> : null}
@@ -244,7 +275,7 @@ export function CallScreen({ data, locale, userId }: { data: CallScreenData; loc
               <CardContent className="space-y-3">
                 <div className="grid grid-cols-2 gap-2">
                   {OUTCOMES.map((o, i) => (
-                    <Button key={o} variant={o === "ANSWERED" ? "default" : "outline"} disabled={pending || !!lockedByOther || !!data.blocked} onClick={() => logOutcome(o)} data-testid={`outcome-${o}`} className="justify-start">
+                    <Button key={o} variant={(proof?.suggestedOutcome ?? "ANSWERED") === o ? "default" : "outline"} disabled={pending || !!lockedByOther || !!data.blocked} onClick={() => logOutcome(o)} data-testid={`outcome-${o}`} className="justify-start">
                       <kbd className="rounded border px-1 font-mono text-[10px]">{i + 1}</kbd> {o === "ANSWERED" ? <Phone className="size-3.5" /> : o === "OFF" ? <PhoneOff className="size-3.5" /> : null} {to(o)}
                     </Button>
                   ))}
@@ -253,7 +284,13 @@ export function CallScreen({ data, locale, userId }: { data: CallScreenData; loc
                   <label className="text-xs text-muted-foreground">{t("duration")}<Input type="number" min={0} value={duration} onChange={(e) => setDuration(Number(e.target.value))} /></label>
                   <label className="text-xs text-muted-foreground">{t("callbackAt")}<Input type="datetime-local" value={callbackAt} onChange={(e) => setCallbackAt(e.target.value)} /></label>
                 </div>
-                <p className="text-[11px] text-muted-foreground">{t("manualProof")}</p>
+                {proof?.proof ? (
+                  <p className="text-xs text-emerald-700" data-testid="proof-received">{t("proofReceived", { source: proof.proof, duration: proof.durationSec ?? 0, outcome: proof.suggestedOutcome ? to(proof.suggestedOutcome as (typeof OUTCOMES)[number]) : "" })}</p>
+                ) : callActive ? (
+                  <p className="text-xs text-amber-700">{t("proofWaiting")}</p>
+                ) : (
+                  <p className="text-[11px] text-muted-foreground">{t("manualProof")}</p>
+                )}
                 {data.nextAllowedAt ? <p className="text-[11px] text-muted-foreground">{t("nextAllowed", { time: formatDateTime(data.nextAllowedAt, locale, data.timezone) })}</p> : null}
               </CardContent>
             </Card>

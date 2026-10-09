@@ -268,6 +268,9 @@ model Organization {
   skuMappings         SkuMapping[]
   intakeWindows       IntakeIpWindow[]
   userPermissions     UserPermission[]
+  messageTemplates    MessageTemplate[]
+  creditLedger        MessageCreditLedger[]
+  deviceTokens        DeviceToken[]
 }
 
 model User {
@@ -606,6 +609,8 @@ model Order {
   clientIp              String?
   /// soft delete (merchant area)
   deletedAt             DateTime?
+  /// public tracking page token (/{locale}/t/{token})
+  trackingToken         String?       @unique
   /// e.g. HIGH_VALUE, REPEAT_REFUSER, BOT_CONFIRMED, MANUAL_PROOF
   flags                 String[]
   createdAt             DateTime      @default(now())
@@ -630,6 +635,7 @@ model Order {
   stockMovements StockMovement[]
   comments       Comment[]
   unmatchedLines UnmatchedLine[]
+  callSessions   CallSession[]
   lockedBy       User?           @relation("LockedOrders", fields: [lockedById], references: [id])
 
   @@unique([merchantId, seq])
@@ -884,19 +890,34 @@ model Task {
 }
 
 model MessageLog {
-  id       String     @id @default(cuid())
-  orderId  String?
-  channel  MsgChannel
-  template String
-  to       String
-  status   String
-  payload  Json       @default("{}")
-  sentAt   DateTime   @default(now())
+  id          String     @id @default(cuid())
+  orderId     String?
+  /// org charged for the message (merchant)
+  orgId       String?
+  channel     MsgChannel
+  template    String
+  to          String
+  /// QUEUED | SENT | DELIVERED | READ | FAILED | SKIPPED_NOT_MOBILE | SKIPPED_NO_CREDIT | SKIPPED_DUPLICATE | DEFERRED_QUIET_HOURS
+  status      String
+  lang        String?
+  body        String?
+  /// provider message id (WhatsApp wamid, SMS id)
+  providerId  String?
+  error       String?
+  /// credits consumed (0 when skipped)
+  cost        Int        @default(0)
+  payload     Json       @default("{}")
+  sentAt      DateTime   @default(now())
+  deliveredAt DateTime?
+  readAt      DateTime?
 
   order Order? @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
-  @@unique([orderId, template])
+  /// one message per event per order and channel (section 19b.5)
+  @@unique([orderId, template, channel])
   @@index([to])
+  @@index([providerId])
+  @@index([orgId, sentAt])
 }
 
 // ─────────────────────────────── Stock ───────────────────────────────
@@ -1213,4 +1234,112 @@ model UserPermission {
   org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
   @@id([userId, orgId, key])
+}
+
+// ─────────────────────────────── Phase 3: call proof and messaging ───────────────────────────────
+
+/**
+ * Bilingual message templates per merchant (merchantId null = platform default). Section 11.
+ */
+model MessageTemplate {
+  id             String     @id @default(cuid())
+  merchantId     String?
+  /// missed_call_1 | written_confirmation | bot_confirm_request | shipped | arrived_wilaya | stopdesk_info | delivery_day_amount | courier_trying_to_reach_you | injoignable_final | did_you_receive
+  key            String
+  channel        MsgChannel
+  /// fr | ar
+  lang           String
+  /// text with {customer_name} {product} {total} {wilaya} {courier_phone} {store_name} {tracking_url} …
+  body           String
+  /// WhatsApp Business approved template name + language code (template messages)
+  waTemplateName String?
+  waLanguage     String?
+  active         Boolean    @default(true)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  merchant Organization? @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@unique([merchantId, key, channel, lang])
+}
+
+/**
+ * Prepaid messaging credits (section 19b.1). Positive = top-up, negative = message sent.
+ */
+model MessageCreditLedger {
+  id           String   @id @default(cuid())
+  orgId        String
+  delta        Int
+  balanceAfter Int
+  /// TOPUP | MESSAGE | ADJUSTMENT | REFUND
+  reason       String
+  messageLogId String?
+  note         String?
+  actorId      String?
+  createdAt    DateTime @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, createdAt])
+}
+
+/**
+ * Short links for SMS (section 19b.5): /s/{code} → tracking page.
+ */
+model ShortLink {
+  code      String   @id
+  url       String
+  orderId   String?
+  clicks    Int      @default(0)
+  createdAt DateTime @default(now())
+}
+
+/**
+ * One outbound call started from the platform (click-to-call). The telephony adapter (VoIP CDR
+ * webhook) or the Android companion (device call log) attaches the proof; the attempt is logged
+ * with that proof. Section 8.3.
+ */
+model CallSession {
+  id            String    @id @default(cuid())
+  callRef       String    @unique
+  /// mock | device | voip:<provider>
+  provider      String
+  orderId       String
+  agentId       String
+  phoneNumberId String?
+  to            String
+  /// DIALING | ANSWERED | COMPLETED | NO_ANSWER | FAILED
+  status        String    @default("DIALING")
+  startedAt     DateTime  @default(now())
+  answeredAt    DateTime?
+  endedAt       DateTime?
+  durationSec   Int?
+  recordingUrl  String?
+  proof         CallProof @default(NONE)
+  /// CallAttempt created from this session
+  attemptId     String?
+  raw           Json      @default("{}")
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, startedAt])
+  @@index([agentId, startedAt])
+}
+
+/**
+ * Paired Android companion devices (call-log sync). The token is shown once; only its hash is stored.
+ */
+model DeviceToken {
+  id         String    @id @default(cuid())
+  userId     String
+  orgId      String
+  name       String
+  tokenHash  String    @unique
+  lastSeenAt DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }

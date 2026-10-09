@@ -40,7 +40,8 @@ export type SideEffect =
   | "MISSED_CALL_MESSAGE"
   | "WRITE_BACK"
   | "QUEUE_REFRESH"
-  | "AUTO_ASSIGN";
+  | "AUTO_ASSIGN"
+  | "BOT_CONFIRM_REQUEST";
 
 export type Requirement =
   | { kind: "ANSWERED_CALL"; minDurationSec?: number }
@@ -285,7 +286,7 @@ export const TRANSITIONS: readonly TransitionRule[] = [
     id: "LOG_CALL",
     from: CONFIRMATION_OPEN_STATUSES,
     to: ["APPEL_1", "APPEL_2", "APPEL_3"],
-    actors: AGENT_ACTORS,
+    actors: ["SYSTEM", ...AGENT_ACTORS],
     schema: callSchema,
     requires: [{ kind: "LOCK_OWNER" }, { kind: "ATTEMPT_COUNT_LT", value: 9 }, { kind: "NEXT_ATTEMPT_STATUS" }, { kind: "CALL_TIMING" }],
     sideEffects: ["SCHEDULE_NEXT_ATTEMPT", "MISSED_CALL_MESSAGE", "WRITE_BACK"],
@@ -313,7 +314,7 @@ export const TRANSITIONS: readonly TransitionRule[] = [
   },
   {
     id: "CONFIRM_BOT",
-    from: ["ASSIGNEE", "APPEL_1", "APPEL_2", "APPEL_3"],
+    from: ["NOUVEAU", "ASSIGNEE", "EN_COURS_CONFIRMATION", "APPEL_1", "APPEL_2", "APPEL_3"],
     to: ["CONFIRMEE_BOT"],
     actors: SYSTEM_ONLY,
     schema: confirmBotSchema,

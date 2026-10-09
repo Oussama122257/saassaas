@@ -165,3 +165,13 @@ export function fastRetryCount(dates: Date[], fastRetryMin: number): { retries: 
   }
   return { retries: Math.max(0, sorted.length - 1), fast };
 }
+
+/** First minute at or after `from` outside every blocked window (quiet hours for messages). */
+export function nextAllowedTime(from: Date, cfg: CallSettings, tz: string): Date {
+  let t = Math.ceil(from.getTime() / 60_000) * 60_000;
+  const limit = t + 3 * 24 * 3600_000;
+  for (; t <= limit; t += 5 * 60_000) {
+    if (!isBlocked(new Date(t), cfg, tz)) return new Date(t);
+  }
+  return new Date(limit);
+}
